@@ -353,6 +353,26 @@ are read once. There is deliberately no content index: a second copy of
 everything would have to be encrypted, kept in step, and guarded as carefully as
 the vault itself.
 
+**Every format read the same way.** Whatever the file is, the preview opens on
+a *Parsed* reading of it when one exists, and falls back to Strings / Full Text
+/ Hex when it does not:
+
+| Format | Read as |
+|--------|---------|
+| SQLite databases | tables, columns and rows — opened read-only and immutable from a private temp copy, since the vault holds the main file without its write-ahead log and SQLite would otherwise "recover" it by writing |
+| Property lists (binary and XML) | the value tree, with plists nested inside plists opened in place |
+| `NSKeyedArchiver` archives | the object graph, following `CF$UID` references back to what was archived rather than showing a table of fragments |
+| SEGB / Biome | records, with field names (see above) |
+| JSON | pretty-printed, keys sorted |
+| gzip | inflated, then read as whatever it turns out to be |
+| Protobuf blobs | the field tree, schema-less |
+| Blob columns inside databases | plists and protobuf unpacked in place — an attributed message body is a plist in a BLOB |
+
+That covers what iLEAPP's 384 modules actually open: databases and plists are
+two thirds of it, the extensionless remainder is mostly Biome. The same reading
+feeds everything — preview, the parsed window, content search (so a phrase in a
+database row or a plist value is findable), and the ChatGPT prompt.
+
 **Send to ChatGPT.** Recovery can say what a file is made of but not what it
 means. This builds a question — path, metadata, detected format, and a bounded
 slice of the decoded contents — and shows the whole thing before anything is
@@ -564,7 +584,7 @@ Tests/HDWatcherCoreTests/    unit + live filesystem integration tests
 swift test
 ```
 
-236 tests, runnable with `swift test` or through the Xcode scheme. Unit tests cover the vault, log round-trips, tamper detection, rule
+255 tests, runnable with `swift test` or through the Xcode scheme. Unit tests cover the vault, log round-trips, tamper detection, rule
 matching, burst and cooldown behaviour, hotspot rollup, filtering, the content
 container (capture, dedup, retention, restore, compaction, encryption at rest)
 the diff engine, and volume classification. Integration tests mount a real disk

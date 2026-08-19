@@ -18,6 +18,9 @@ let package = Package(
                 .linkedFramework("DiskArbitration"),
                 .linkedFramework("LocalAuthentication"),
                 .linkedFramework("AppKit"),
+                // Reading the format most of the interesting data on a Mac
+                // actually lives in.
+                .linkedLibrary("sqlite3"),
             ]
         ),
         .executableTarget(

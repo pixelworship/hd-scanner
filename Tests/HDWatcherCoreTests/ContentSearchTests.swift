@@ -26,7 +26,7 @@ final class ContentSearchTests: XCTestCase {
     func testReadsRecordFilesAsParsedRecords() throws {
         let segb = Data(base64Encoded: "U0VHQgIAAAAAAAAAaSDHQQAAAAAAAAAAAAAAAAAAAACdzpo0AAAAAAoaY29tLmFwcGxlLlF1aWNrVGltZVBsYXllclgQ8yAZAAAABWkgx0H4xrgKAAAAAAodY28ucGl4ZWx3b3JzaGlwLnNlY3VyZS1maW5kZXISDwgHEgtBQiQwREM1Q0E4NzAAAAABAAAAAAAAAGkgx0FoAAAAAwAAAAAAgABpIMdB")!
         let (text, source) = ContentSearchEngine.extract(from: segb)
-        XCTAssertEqual(source, .records)
+        XCTAssertEqual(source, .parsed(.records))
         let rendered = try XCTUnwrap(text)
         XCTAssertTrue(rendered.contains("com.apple.QuickTimePlayerX"))
         // A timestamp the reader can see on screen has to be searchable too; it

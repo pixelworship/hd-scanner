@@ -24,10 +24,17 @@ public final class ContentSearchEngine: @unchecked Sendable {
         /// Which reading of the file produced the match.
         public let source: Source
 
-        public enum Source: String, Sendable {
-            case records = "parsed records"
-            case text = "text"
-            case bytes = "contents"
+        /// Named rather than enumerated: the set of formats that can be read
+        /// grows, and a match found in a parsed database should say so.
+        public struct Source: Sendable, Equatable {
+            public let label: String
+            public init(label: String) { self.label = label }
+
+            public static let text = Source(label: "text")
+            public static let bytes = Source(label: "contents")
+            public static func parsed(_ format: StructuredRead.Format) -> Source {
+                Source(label: "parsed \(format.rawValue.lowercased())")
+            }
         }
     }
 
@@ -156,10 +163,11 @@ public final class ContentSearchEngine: @unchecked Sendable {
     /// Returns nil when the content has no better textual form than its own
     /// bytes, which is the signal to search it byte-wise instead.
     static func extract(from data: Data, path: String = "") -> (String?, Hit.Source) {
-        if let document = SEGB.parse(data) {
-            // Rendered with names where we have them, so a search for
-            // "Foreground" or a bundle identifier matches what the reader sees.
-            return (SEGB.render(document, stream: BiomeSchema.stream(forFilePath: path)), .records)
+        // Parsed first: a phrase inside a database row, a plist value or a
+        // Biome record is invisible in the raw bytes, and a search that misses
+        // it is worse than useless — it says the phrase is not there.
+        if let reading = StructuredRead.read(data, path: path) {
+            return (reading.text, .parsed(reading.format))
         }
         if FileSnapshot.looksTextual(data), let text = String(data: data, encoding: .utf8) {
             return (text, .text)
@@ -168,7 +176,12 @@ public final class ContentSearchEngine: @unchecked Sendable {
     }
 
     private func sourceHint(for text: String) -> Hit.Source {
-        text.hasPrefix("SEGB v") ? .records : .bytes
+        if text.hasPrefix("SEGB v") { return .parsed(.records) }
+        if text.hasPrefix("SQLite database") { return .parsed(.database) }
+        if text.hasPrefix("Binary property list") || text.hasPrefix("XML property list") {
+            return .parsed(.plist)
+        }
+        return .text
     }
 
     // MARK: - Matching

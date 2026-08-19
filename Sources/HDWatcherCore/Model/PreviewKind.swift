@@ -15,6 +15,9 @@ public enum PreviewKind: String, Sendable, CaseIterable {
     case binary
     /// Apple's SEGB record files, as used by Biome.
     case records
+    case database
+    case plist
+    case json
 
     public var displayName: String {
         switch self {
@@ -26,6 +29,9 @@ public enum PreviewKind: String, Sendable, CaseIterable {
         case .archive: return "Archive"
         case .binary:  return "Binary"
         case .records: return "Records"
+        case .database: return "Database"
+        case .plist:   return "Property list"
+        case .json:    return "JSON"
         }
     }
 
@@ -39,6 +45,9 @@ public enum PreviewKind: String, Sendable, CaseIterable {
         case .archive: return "shippingbox"
         case .binary:  return "doc.badge.gearshape"
         case .records: return "list.bullet.rectangle"
+        case .database: return "tablecells"
+        case .plist:   return "list.bullet.indent"
+        case .json:    return "curlybraces"
         }
     }
 
@@ -84,9 +93,11 @@ public enum PreviewKind: String, Sendable, CaseIterable {
 
     /// Classifies content. `data` may be a prefix; only the first bytes matter.
     public static func detect(data: Data, fileName: String) -> PreviewKind {
-        // A record file is readable in a way no other binary is, so it is
-        // worth identifying before anything else.
+        // Formats that can be read properly are identified before anything
+        // else: what a file *is* beats what its bytes look like.
         if SEGB.detect(data) != nil { return .records }
+        if SQLiteReader.detect(data) { return .database }
+        if PlistReader.detect(data) { return .plist }
 
         // Magic bytes beat the name: a file's contents are what it actually is.
         if !data.isEmpty {
@@ -113,6 +124,7 @@ public enum PreviewKind: String, Sendable, CaseIterable {
 
         let ext = (fileName as NSString).pathExtension.lowercased()
         if let mapped = extensionMap[ext] { return mapped }
+        if JSONReader.detect(data), JSONReader.read(data) != nil { return .json }
 
         // Nothing recognised: decide between text and binary by inspection.
         return FileSnapshot.looksTextual(data) ? .text : .binary

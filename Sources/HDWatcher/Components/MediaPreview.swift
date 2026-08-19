@@ -53,7 +53,7 @@ struct MediaPreviewPane: View {
     private var showsSummaryBar: Bool {
         switch kind {
         case .image, .pdf, .audio, .video, .archive: return true
-        case .text, .binary, .records: return false
+        case .text, .binary, .records, .database, .plist, .json: return false
         }
     }
 
@@ -127,7 +127,7 @@ struct MediaPreviewPane: View {
         case .text:
             PlainTextScrollView(text: String(data: data, encoding: .utf8) ?? "")
 
-        case .binary, .records:
+        case .binary, .records, .database, .plist, .json:
             binaryPane
         }
     }
@@ -214,7 +214,9 @@ struct ImageComparisonView: View {
 
 /// Content with no dedicated viewer, read four ways.
 ///
-/// Records is the structured reading of a format the app understands. Strings
+/// Parsed is the structured reading of a format the app understands — a
+/// database as tables and rows, a plist as its tree, a record stream as its
+/// records. Strings
 /// pulls out the readable fragments, which is how you find an address or a
 /// bundle identifier in a database. Full Text shows every byte the way a text
 /// editor would, so nothing is hidden by the extraction. Hex is the ground
@@ -232,7 +234,7 @@ struct BinaryVersionPane: View {
     var onPickComparison: (() -> Void)?
 
     enum Mode: String, CaseIterable, Identifiable {
-        case records = "Records"
+        case parsed = "Parsed"
         case strings = "Strings"
         case raw = "Full Text"
         case hex = "Hex"
@@ -249,7 +251,7 @@ struct BinaryVersionPane: View {
     /// Everything that can be prepared without knowing which mode the reader
     /// will pick. All of it is linear in the size of the file.
     struct Base: Sendable {
-        var recordText: String?
+        var parsed: StructuredRead.Reading?
         var strings: [BinaryText.Run]
         var rawLines: [BinaryText.RawLine]
         var rawTruncated: Bool
@@ -276,7 +278,7 @@ struct BinaryVersionPane: View {
 
     private var availableModes: [Mode] {
         guard let base else { return [] }
-        return Mode.allCases.filter { $0 != .records || base.recordText != nil }
+        return Mode.allCases.filter { $0 != .parsed || base.parsed != nil }
     }
 
     private var diffKey: String { "\(identity)|\(mode?.rawValue ?? "-")|\(showDiff)" }
@@ -376,8 +378,9 @@ struct BinaryVersionPane: View {
     private var scopeNote: String {
         guard let base, let mode else { return Format.bytes(byteCount) }
         switch mode {
-        case .records:
-            return Format.bytes(byteCount)
+        case .parsed:
+            return [base.parsed?.title, Format.bytes(byteCount)]
+                .compactMap { $0 }.joined(separator: " · ")
         case .strings:
             return "\(Format.count(base.strings.count)) readable strings · \(Format.bytes(byteCount))"
         case .raw:
@@ -411,8 +414,8 @@ struct BinaryVersionPane: View {
                 identicalNotice
             }
 
-        case (.records, _):
-            PlainTextScrollView(text: base.recordText ?? "")
+        case (.parsed, _):
+            PlainTextScrollView(text: base.parsed?.text ?? "")
 
         case (.strings, _):
             stringsView(base)
@@ -506,8 +509,8 @@ struct BinaryVersionPane: View {
         base = nil
         diff = nil
         let bytes = data
-        let stream = streamPath.flatMap { BiomeSchema.stream(forFilePath: $0) }
-        let built = await Task.detached(priority: .userInitiated) { Self.build(bytes, stream: stream) }.value
+        let path = streamPath ?? ""
+        let built = await Task.detached(priority: .userInitiated) { Self.build(bytes, path: path) }.value
         base = built
         mode = Self.defaultMode(for: built)
     }
@@ -517,14 +520,16 @@ struct BinaryVersionPane: View {
         isDiffing = true
         defer { isDiffing = false }
         let mine = data
-        let stream = streamPath.flatMap { BiomeSchema.stream(forFilePath: $0) }
+        let path = streamPath ?? ""
         diff = await Task.detached(priority: .userInitiated) { () -> DiffPayload in
             switch mode {
             case .hex:
                 return .bytes(BinaryDiff.compare(other, mine))
-            case .records:
-                return .lines(TextDiff.compare(Self.renderRecords(of: other, stream: stream) ?? "",
-                                               Self.renderRecords(of: mine, stream: stream) ?? ""))
+            case .parsed:
+                // Comparing the parsed readings, not the bytes: two versions of
+                // a database differ by rows, not by page layout.
+                return .lines(TextDiff.compare(StructuredRead.read(other, path: path)?.text ?? "",
+                                               StructuredRead.read(mine, path: path)?.text ?? ""))
             case .strings:
                 return .lines(TextDiff.compare(BinaryText.plainText(in: other),
                                                BinaryText.plainText(in: mine)))
@@ -534,7 +539,7 @@ struct BinaryVersionPane: View {
         }.value
     }
 
-    nonisolated private static func build(_ data: Data, stream: BiomeSchema.Stream? = nil) -> Base {
+    nonisolated private static func build(_ data: Data, path: String = "") -> Base {
         let hexSlice = data.prefix(hexByteLimit)
         let rows = stride(from: 0, to: hexSlice.count, by: 16).map { start -> HexRow in
             let chunk = [UInt8](hexSlice[hexSlice.startIndex + start..<hexSlice.startIndex + min(start + 16, hexSlice.count)])
@@ -548,7 +553,7 @@ struct BinaryVersionPane: View {
             return HexRow(offset: start, hex: hex, ascii: ascii)
         }
         let raw = BinaryText.rawLines(of: data)
-        return Base(recordText: renderRecords(of: data, stream: stream),
+        return Base(parsed: StructuredRead.read(data, path: path),
                     strings: BinaryText.runs(in: data),
                     rawLines: raw.lines,
                     rawTruncated: raw.truncated,
@@ -557,19 +562,13 @@ struct BinaryVersionPane: View {
                     readableFraction: BinaryText.readableFraction(of: data))
     }
 
-    nonisolated private static func renderRecords(of data: Data,
-                                                  stream: BiomeSchema.Stream?) -> String? {
-        guard let document = SEGB.parse(data) else { return nil }
-        return SEGB.render(document, stream: stream)
-    }
-
     nonisolated private static func rawText(of data: Data) -> String {
         BinaryText.rawLines(of: data).lines.map(\.text).joined(separator: "\n")
     }
 
     /// Opens on the reading that will actually tell the user something.
     private static func defaultMode(for base: Base) -> Mode {
-        if base.recordText != nil { return .records }
+        if base.parsed != nil { return .parsed }
         if base.strings.count >= 8 { return .strings }
         if base.readableFraction > 0.05 { return .raw }
         return .hex

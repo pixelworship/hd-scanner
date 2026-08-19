@@ -58,6 +58,7 @@ public enum AnalysisPrompt {
         if let version = SEGB.detect(data) {
             return "Apple \(version.rawValue) record file (as found under ~/Library/Biome)"
         }
+        if let reading = StructuredRead.read(data) { return reading.title }
         return kind.displayName
     }
 
@@ -65,10 +66,10 @@ public enum AnalysisPrompt {
     /// sending raw bytes for everything.
     private static func contents(data: Data, kind: PreviewKind, path: String,
                                  budget: Int) -> (String, Bool, Int) {
-        if let document = SEGB.parse(data) {
-            let rendered = SEGB.render(document, maxRecords: 60,
-                                       stream: BiomeSchema.stream(forFilePath: path))
-            return clip(rendered, budget: budget, source: data.count)
+        // Send the parsed reading rather than the bytes: a model can say what a
+        // table of rows means, and can do nothing with a page of hex.
+        if let reading = StructuredRead.read(data, path: path) {
+            return clip(reading.text, budget: budget, source: data.count)
         }
         if kind == .text, let text = String(data: data, encoding: .utf8) {
             return clip(text, budget: budget, source: data.count)

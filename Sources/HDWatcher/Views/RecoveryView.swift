@@ -393,18 +393,18 @@ struct RecoveryView: View {
                             Label("Reveal", systemImage: "folder")
                         }
                     }
-                    if previewKind == .records {
+                    if [.records, .database, .plist, .json].contains(previewKind) {
                         Button {
                             openRecords(of: snapshot)
                         } label: {
                             if isParsingRecords {
                                 ProgressView().controlSize(.small)
                             } else {
-                                Label("Open Records", systemImage: "list.bullet.rectangle")
+                                Label("Open Parsed", systemImage: previewKind.symbolName)
                             }
                         }
                         .disabled(previewData == nil || isParsingRecords)
-                        .help("Opens every record in this file in its own window, parsed")
+                        .help("Opens the whole file, parsed, in its own window")
                     }
                     Button {
                         prepareAnalysis(of: snapshot)
@@ -702,11 +702,11 @@ struct RecoveryView: View {
         isParsingRecords = true
         Task {
             let parsed = await Task.detached(priority: .userInitiated) {
-                ParsedRecords.build(from: data, snapshot: version)
+                ParsedDocument.build(from: data, snapshot: version)
             }.value
             isParsingRecords = false
             guard let parsed else {
-                message = "\(version.fileName) is not a record file."
+                message = "Nothing here knows how to parse \(version.fileName)."
                 messageIsError = true
                 return
             }
@@ -879,7 +879,7 @@ struct ContentHitRow: View {
             HStack(spacing: 6) {
                 Text("v\(hit.snapshot.generation)")
                     .font(.caption2.weight(.bold))
-                Text(hit.source.rawValue)
+                Text(hit.source.label)
                     .font(.caption2).foregroundStyle(.tertiary)
                 Text(Format.relativeTime(hit.snapshot.capturedAt))
                     .font(.caption2).foregroundStyle(.tertiary)

@@ -2,17 +2,25 @@ import SwiftUI
 import AppKit
 import HDWatcherCore
 
-/// A whole parsed record file, prepared away from the main thread.
-struct ParsedRecords: Sendable {
+/// A whole parsed file, prepared away from the main thread.
+///
+/// Record streams get a record-by-record browser; every other readable format —
+/// a database, a plist, a keyed archive, JSON — gets the same window with its
+/// parsed text, because the reason for opening it is the same: the preview pane
+/// is a column in a split view and this is a document.
+struct ParsedDocument: Sendable {
     let path: String
     let fileName: String
     let generation: Int
     let capturedAt: Date
-    let document: SEGB.Document
+    let reading: StructuredRead.Reading
+    /// Present only for record streams.
+    let document: SEGB.Document?
     let records: [RenderedRecord]
-    let fullText: String
-    /// The stream this file belongs to, when it is one we have names for.
+    /// The Biome stream this file belongs to, when it is one we have names for.
     let stream: BiomeSchema.Stream?
+
+    var fullText: String { reading.text }
 
     struct RenderedRecord: Identifiable, Sendable {
         let id: Int
@@ -23,11 +31,18 @@ struct ParsedRecords: Sendable {
         let searchKey: String
     }
 
-    /// Renders every record once. Everything the browser needs afterwards is a
+    /// Renders everything once. Whatever the browser needs afterwards is a
     /// lookup rather than a parse.
-    static func build(from data: Data, snapshot: FileSnapshot) -> ParsedRecords? {
-        guard let document = SEGB.parse(data, maxRecords: 200_000) else { return nil }
+    static func build(from data: Data, snapshot: FileSnapshot) -> ParsedDocument? {
+        guard let reading = StructuredRead.read(data, path: snapshot.path) else { return nil }
         let stream = BiomeSchema.stream(forFilePath: snapshot.path)
+
+        guard let document = SEGB.parse(data, maxRecords: 200_000) else {
+            return ParsedDocument(path: snapshot.path, fileName: snapshot.fileName,
+                                  generation: snapshot.generation, capturedAt: snapshot.capturedAt,
+                                  reading: reading, document: nil, records: [], stream: stream)
+        }
+
         let rendered = document.records.map { record -> RenderedRecord in
             let lines: [String]
             if record.data.isEmpty {
@@ -43,14 +58,14 @@ struct ParsedRecords: Sendable {
             return RenderedRecord(id: record.id, record: record, lines: lines,
                                   searchKey: lines.joined(separator: "\n").lowercased())
         }
-        return ParsedRecords(path: snapshot.path,
-                             fileName: snapshot.fileName,
-                             generation: snapshot.generation,
-                             capturedAt: snapshot.capturedAt,
-                             document: document,
-                             records: rendered,
-                             fullText: SEGB.render(document, maxRecords: 200_000, stream: stream),
-                             stream: stream)
+        return ParsedDocument(path: snapshot.path,
+                              fileName: snapshot.fileName,
+                              generation: snapshot.generation,
+                              capturedAt: snapshot.capturedAt,
+                              reading: reading,
+                              document: document,
+                              records: rendered,
+                              stream: stream)
     }
 }
 
@@ -63,8 +78,8 @@ struct ParsedRecords: Sendable {
 enum RecordsWindow {
     private static var open: [NSWindow] = []
 
-    static func present(_ parsed: ParsedRecords) {
-        let controller = NSHostingController(rootView: SEGBBrowserView(parsed: parsed))
+    static func present(_ parsed: ParsedDocument) {
+        let controller = NSHostingController(rootView: ParsedBrowserView(parsed: parsed))
         let window = NSWindow(contentViewController: controller)
         window.title = "\(parsed.fileName) — v\(parsed.generation) parsed"
         window.subtitle = parsed.path
@@ -83,9 +98,10 @@ enum RecordsWindow {
     }
 }
 
-/// Browses every record in a parsed SEGB file.
-struct SEGBBrowserView: View {
-    let parsed: ParsedRecords
+/// Browses a parsed file: record by record where there are records, as text
+/// where there are not.
+struct ParsedBrowserView: View {
+    let parsed: ParsedDocument
 
     enum Filter: String, CaseIterable, Identifiable {
         case all = "All"
@@ -106,17 +122,34 @@ struct SEGBBrowserView: View {
     @State private var filter: Filter = .all
     @State private var detail: Detail = .fields
     @State private var selected: Int?
-    @State private var matches: [ParsedRecords.RenderedRecord] = []
+    @State private var matches: [ParsedDocument.RenderedRecord] = []
     @State private var isFiltering = false
     @State private var page = PageWindow(pageSize: 200)
     @State private var message: String?
 
-    private var selectedRecord: ParsedRecords.RenderedRecord? {
+    private var selectedRecord: ParsedDocument.RenderedRecord? {
         guard let selected else { return nil }
         return parsed.records.first { $0.id == selected }
     }
 
     var body: some View {
+        if parsed.records.isEmpty {
+            textBody
+        } else {
+            recordBody
+        }
+    }
+
+    /// Databases, plists and the rest: one document, searched by line.
+    private var textBody: some View {
+        VStack(spacing: 0) {
+            header
+            Divider()
+            ParsedTextBrowser(text: parsed.fullText)
+        }
+    }
+
+    private var recordBody: some View {
         VStack(spacing: 0) {
             header
             Divider()
@@ -143,10 +176,17 @@ struct SEGBBrowserView: View {
     private var header: some View {
         VStack(alignment: .leading, spacing: 8) {
             HStack(spacing: 10) {
-                Label(parsed.document.version.rawValue, systemImage: "list.bullet.rectangle")
+                Label(parsed.reading.format.rawValue, systemImage: parsed.reading.format.symbolName)
                     .font(.caption.weight(.semibold))
                     .padding(.horizontal, 8).padding(.vertical, 3)
                     .background(.blue.opacity(0.15), in: Capsule())
+
+                Text(parsed.reading.title)
+                    .font(.caption).foregroundStyle(.secondary)
+                if parsed.reading.decompressed {
+                    Label("decompressed", systemImage: "arrow.down.circle")
+                        .font(.caption2).foregroundStyle(.tertiary)
+                }
 
                 if let stream = parsed.stream {
                     Text(stream.title)
@@ -156,19 +196,19 @@ struct SEGBBrowserView: View {
                         .help("\(stream.name) · \(stream.fieldCount) named fields, from iLEAPP's parsers")
                 }
 
-                Text("\(Format.count(parsed.document.records.count)) records")
-                    .font(.caption).foregroundStyle(.secondary)
-                if parsed.document.deletedCount > 0 {
-                    Text("\(Format.count(parsed.document.deletedCount)) deleted")
-                        .font(.caption).foregroundStyle(.orange)
-                }
-                if parsed.document.failedCRCCount > 0 {
-                    Label("\(parsed.document.failedCRCCount) failed CRC", systemImage: "exclamationmark.triangle")
-                        .font(.caption).foregroundStyle(.red)
-                }
-                if let created = parsed.document.created {
-                    Text("created \(Format.fullTimestamp(created))")
-                        .font(.caption2).foregroundStyle(.tertiary)
+                if let document = parsed.document {
+                    if document.deletedCount > 0 {
+                        Text("\(Format.count(document.deletedCount)) deleted")
+                            .font(.caption).foregroundStyle(.orange)
+                    }
+                    if document.failedCRCCount > 0 {
+                        Label("\(document.failedCRCCount) failed CRC", systemImage: "exclamationmark.triangle")
+                            .font(.caption).foregroundStyle(.red)
+                    }
+                    if let created = document.created {
+                        Text("created \(Format.fullTimestamp(created))")
+                            .font(.caption2).foregroundStyle(.tertiary)
+                    }
                 }
                 Spacer()
                 Button {
@@ -186,12 +226,13 @@ struct SEGBBrowserView: View {
                 .controlSize(.small)
             }
 
-            if let problem = parsed.document.problem {
+            if let problem = parsed.document?.problem {
                 Label(problem, systemImage: "exclamationmark.triangle.fill")
                     .font(.caption).foregroundStyle(.orange)
             }
 
             HStack(spacing: 12) {
+                if parsed.records.isEmpty { EmptyView() } else {
                 Picker("", selection: $filter) {
                     ForEach(Filter.allCases) { Text($0.rawValue).tag($0) }
                 }
@@ -215,6 +256,7 @@ struct SEGBBrowserView: View {
                 Spacer()
                 Text("\(Format.count(matches.count)) shown")
                     .font(.caption).foregroundStyle(.secondary)
+                }
             }
         }
         .padding(.horizontal, 14).padding(.vertical, 10)
@@ -394,6 +436,63 @@ struct SEGBBrowserView: View {
             message = "Saved \(url.lastPathComponent)."
         } catch {
             message = "Could not save: \(error.localizedDescription)"
+        }
+    }
+}
+
+/// A parsed document that has no records to page through — a database dump, a
+/// plist tree, a JSON body.
+///
+/// Search here filters to the matching lines rather than jumping between hits:
+/// with a fourteen-table database the question is almost always "where does
+/// this value appear", and the answer reads better as a list than as a cursor
+/// bouncing around a wall of text.
+struct ParsedTextBrowser: View {
+    let text: String
+
+    @State private var query = ""
+    @State private var matching: [String] = []
+    @State private var isFiltering = false
+
+    private var lines: [String] { text.components(separatedBy: "\n") }
+
+    var body: some View {
+        VStack(spacing: 0) {
+            HStack(spacing: 8) {
+                Image(systemName: "line.3.horizontal.decrease.circle").foregroundStyle(.secondary)
+                TextField("Filter lines", text: $query).textFieldStyle(.plain)
+                if isFiltering { ProgressView().controlSize(.small) }
+                if !query.isEmpty {
+                    Text("\(Format.count(matching.count)) matching lines")
+                        .font(.caption2).foregroundStyle(.secondary)
+                    Button { query = "" } label: {
+                        Image(systemName: "xmark.circle.fill").foregroundStyle(.tertiary)
+                    }.buttonStyle(.plain)
+                }
+            }
+            .padding(.horizontal, 12).padding(.vertical, 7)
+            Divider()
+
+            if query.isEmpty {
+                PlainTextScrollView(text: text, lineLimit: 200_000)
+            } else if matching.isEmpty && !isFiltering {
+                EmptyStateView(symbol: "text.magnifyingglass",
+                               title: "No line contains \"\(query)\"")
+            } else {
+                PlainTextScrollView(text: matching.joined(separator: "\n"), lineLimit: 200_000)
+            }
+        }
+        .task(id: query) {
+            guard !query.isEmpty else { matching = []; return }
+            isFiltering = true
+            defer { isFiltering = false }
+            try? await Task.sleep(for: .milliseconds(150))
+            guard !Task.isCancelled else { return }
+            let needle = query.lowercased()
+            let all = lines
+            matching = await Task.detached(priority: .userInitiated) {
+                all.filter { $0.lowercased().contains(needle) }
+            }.value
         }
     }
 }
