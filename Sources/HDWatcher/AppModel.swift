@@ -108,7 +108,7 @@ final class AppModel {
     private var filterTask: Task<Void, Never>?
     /// Last vault revision and filter the recovery list was built from, so a
     /// once-a-second poll can skip the expensive work when nothing changed.
-    private var recoverySignature: String?
+    private var recoveryGate = RecoveryRefreshGate()
     var contentStats = ContentVaultStats()
 
     // Configuration
@@ -216,6 +216,7 @@ final class AppModel {
         regroupTask?.cancel(); regroupTask = nil
         filterTask?.cancel(); filterTask = nil
         recoveryRevision = -1
+        recoveryGate.reset()
         allRecoveryGroups.removeAll()
         recoveryGroups.removeAll()
         cancelContentSearch()
@@ -546,6 +547,15 @@ final class AppModel {
         let needsRegroup = force || revision != recoveryRevision
         recoveryFilter = (deletedOnly: deletedOnly, search: search)
 
+        // Nothing has moved since the last pass: same vault revision, same
+        // filter. The list polls once a second to stay live, and without this
+        // every tick re-filtered thousands of groups and flashed the spinner
+        // in the search box for no reason at all.
+        guard needsRegroup || recoveryGate.needsPass(revision: revision,
+                                                     deletedOnly: deletedOnly,
+                                                     search: search, force: force)
+        else { return }
+
         if needsRegroup {
             recoveryRevision = revision
             if allRecoveryGroups.isEmpty { isLoadingRecovery = true }
@@ -665,8 +675,12 @@ final class AppModel {
     func applyRecoveryFilter() {
         let filter = recoveryFilter
         let source = allRecoveryGroups
+        let revision = recoveryRevision
         filterTask?.cancel()
-        isFilteringRecovery = !(filter.search ?? "").isEmpty
+        // The spinner means "working on what you just typed". A refresh caused
+        // by new captures arriving re-filters silently: nobody asked for it and
+        // nobody is waiting on it.
+        isFilteringRecovery = recoveryGate.showsProgress(for: filter.search)
         filterTask = Task { [weak self] in
             // Cancelled by the next keystroke before this elapses.
             try? await Task.sleep(for: .milliseconds(180))
@@ -677,8 +691,15 @@ final class AppModel {
             guard !Task.isCancelled, let self else { return }
             self.recoveryGroups = filtered
             self.isFilteringRecovery = false
+            // Recorded only now the results are on screen: a pass cancelled by
+            // the next keystroke must be repeated, not assumed done.
+            self.recoveryGate.finished(revision: revision,
+                                       deletedOnly: filter.deletedOnly,
+                                       search: filter.search)
         }
     }
+
+
 
     nonisolated private static func filterGroups(_ groups: [SnapshotGroup],
                                                  deletedOnly: Bool,
