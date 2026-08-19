@@ -1,0 +1,50 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>CFBundleDevelopmentRegion</key>
+    <string>en</string>
+    <key>CFBundleExecutable</key>
+    <string>HDWatcher</string>
+    <key>CFBundleIconFile</key>
+    <string>AppIcon</string>
+    <key>CFBundleIdentifier</key>
+    <string>co.pixelworship.hdwatcher</string>
+    <key>CFBundleInfoDictionaryVersion</key>
+    <string>6.0</string>
+    <key>CFBundleName</key>
+    <string>HDWatcher</string>
+    <key>CFBundleDisplayName</key>
+    <string>HDWatcher</string>
+    <key>CFBundlePackageType</key>
+    <string>APPL</string>
+    <key>CFBundleShortVersionString</key>
+    <string>1.0</string>
+    <key>CFBundleVersion</key>
+    <string>1</string>
+    <key>LSMinimumSystemVersion</key>
+    <string>14.0</string>
+    <key>LSApplicationCategoryType</key>
+    <string>public.app-category.utilities</string>
+    <key>NSHighResolutionCapable</key>
+    <true/>
+    <key>NSSupportsAutomaticGraphicsSwitching</key>
+    <true/>
+    <key>NSHumanReadableCopyright</key>
+    <string>Pixel Worship</string>
+
+    <!-- macOS shows these strings when it asks the user to grant access. -->
+    <key>NSDesktopFolderUsageDescription</key>
+    <string>HDWatcher records file activity on your Desktop so it can appear in your encrypted activity log.</string>
+    <key>NSDocumentsFolderUsageDescription</key>
+    <string>HDWatcher records file activity in your Documents folder so it can appear in your encrypted activity log.</string>
+    <key>NSDownloadsFolderUsageDescription</key>
+    <string>HDWatcher records file activity in your Downloads folder so it can appear in your encrypted activity log.</string>
+    <key>NSRemovableVolumesUsageDescription</key>
+    <string>HDWatcher watches removable drives so it can detect files being copied on or off them.</string>
+    <key>NSNetworkVolumesUsageDescription</key>
+    <string>HDWatcher watches mounted network volumes so it can detect files being transferred to or from them.</string>
+    <key>NSFileProviderDomainUsageDescription</key>
+    <string>HDWatcher observes cloud-synced folders so their activity appears in your log.</string>
+</dict>
+</plist>

@@ -1,0 +1,155 @@
+# XcodeGen spec for HDWatcher.
+# Regenerate with:  xcodegen generate
+#
+# The Swift Package remains the source of truth for building headlessly
+# (swift build / swift test). This project exists so the app can be built,
+# signed and archived through Xcode with a real team identity.
+name: HDWatcher
+options:
+  bundleIdPrefix: co.pixelworship
+  deploymentTarget:
+    macOS: "14.0"
+  createIntermediateGroups: true
+  groupSortPosition: top
+
+settings:
+  base:
+    # Pixel Worship. Note the organisation's certificate is confusingly named
+    # "Apple Development: Matthew Mourlam (2QHZSWALA4)" — the cert named after
+    # matt@pixelworship.co belongs to a different, personal team (S8WVYZX5QM).
+    DEVELOPMENT_TEAM: BM46YKWLTV
+    ORGANIZATION_NAME: Pixel Worship
+    CODE_SIGN_STYLE: Automatic
+    SWIFT_VERSION: "5.0"
+    MACOSX_DEPLOYMENT_TARGET: "14.0"
+    ENABLE_HARDENED_RUNTIME: YES
+    DEAD_CODE_STRIPPING: YES
+    CURRENT_PROJECT_VERSION: 1
+    MARKETING_VERSION: "1.0"
+
+targets:
+  # Mirrors the Swift package layout: the engine is a framework the app links,
+  # which is also what lets the test target use @testable import.
+  HDWatcherCore:
+    type: framework
+    platform: macOS
+    sources:
+      - path: Sources/HDWatcherCore
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: co.pixelworship.hdwatcher.core
+        PRODUCT_NAME: HDWatcherCore
+        GENERATE_INFOPLIST_FILE: YES
+        DEFINES_MODULE: YES
+        SKIP_INSTALL: YES
+        DYLIB_INSTALL_NAME_BASE: "@rpath"
+      configs:
+        Debug:
+          ENABLE_TESTABILITY: YES
+    dependencies:
+      - sdk: CoreServices.framework
+      - sdk: DiskArbitration.framework
+      - sdk: LocalAuthentication.framework
+      - sdk: UserNotifications.framework
+
+  hdwatcherd:
+    type: tool
+    platform: macOS
+    sources:
+      - path: Sources/HDWatcherAgent
+    settings:
+      base:
+        PRODUCT_NAME: hdwatcherd
+        PRODUCT_BUNDLE_IDENTIFIER: co.pixelworship.hdwatcher.agent
+        SKIP_INSTALL: YES
+    dependencies:
+      - target: HDWatcherCore
+
+  HDWatcher:
+    type: application
+    platform: macOS
+    sources:
+      - path: Sources/HDWatcher
+      - path: Resources
+        buildPhase: none
+      - path: Resources/co.pixelworship.hdwatcher.daemon.plist
+        buildPhase: none
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: co.pixelworship.hdwatcher
+        PRODUCT_NAME: HDWatcher
+        INFOPLIST_FILE: Resources/Info.plist
+        CODE_SIGN_ENTITLEMENTS: Resources/HDWatcher.entitlements
+        ASSETCATALOG_COMPILER_APPICON_NAME: ""
+        COMBINE_HIDPI_IMAGES: YES
+        LD_RUNPATH_SEARCH_PATHS: "$(inherited) @executable_path/../Frameworks"
+        # HDWatcher cannot be sandboxed: a sandboxed app is not eligible for
+        # Full Disk Access, and watching the whole drive is the point.
+        ENABLE_APP_SANDBOX: NO
+        SWIFT_ACTIVE_COMPILATION_CONDITIONS: "$(inherited) XCODE_BUILD"
+      configs:
+        Debug:
+          SWIFT_OPTIMIZATION_LEVEL: "-Onone"
+        Release:
+          SWIFT_OPTIMIZATION_LEVEL: "-O"
+    dependencies:
+      - target: HDWatcherCore
+        embed: true
+      - target: hdwatcherd
+        embed: false
+        copy:
+          destination: executables
+      - sdk: UserNotifications.framework
+      - sdk: ServiceManagement.framework
+    postBuildScripts:
+      - name: Embed LaunchDaemon plist
+        basedOnDependencyAnalysis: false
+        script: |
+          # SMAppService looks for the daemon's plist here.
+          DEST="$TARGET_BUILD_DIR/$CONTENTS_FOLDER_PATH/Library/LaunchDaemons"
+          mkdir -p "$DEST"
+          cp "$SRCROOT/Resources/co.pixelworship.hdwatcher.daemon.plist" "$DEST/"
+    preBuildScripts:
+      - name: Generate App Icon
+        basedOnDependencyAnalysis: false
+        script: |
+          # Renders AppIcon.icns into the built product's Resources.
+          ICONSET="$DERIVED_FILE_DIR/AppIcon.iconset"
+          rm -rf "$ICONSET"
+          mkdir -p "$DERIVED_FILE_DIR"
+          if xcrun swift "$SRCROOT/Scripts/make-icon.swift" "$DERIVED_FILE_DIR" >/dev/null 2>&1; then
+            mkdir -p "$TARGET_BUILD_DIR/$UNLOCALIZED_RESOURCES_FOLDER_PATH"
+            iconutil -c icns "$ICONSET" \
+              -o "$TARGET_BUILD_DIR/$UNLOCALIZED_RESOURCES_FOLDER_PATH/AppIcon.icns"
+          else
+            echo "warning: app icon generation failed; continuing without one"
+          fi
+
+  HDWatcherTests:
+    type: bundle.unit-test
+    platform: macOS
+    sources:
+      - path: Tests/HDWatcherCoreTests
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: co.pixelworship.hdwatcher.tests
+        GENERATE_INFOPLIST_FILE: YES
+    dependencies:
+      - target: HDWatcherCore
+
+schemes:
+  HDWatcher:
+    build:
+      targets:
+        HDWatcherCore: all
+        hdwatcherd: all
+        HDWatcher: all
+        HDWatcherTests: [test]
+    run:
+      config: Debug
+    test:
+      config: Debug
+      targets:
+        - HDWatcherTests
+    archive:
+      config: Release
