@@ -228,9 +228,12 @@ public enum SEGB {
 
     /// Renders a document as readable text: one block per record, with the
     /// protobuf payload decoded where it can be.
-    public static func render(_ document: Document, maxRecords: Int = 4_000) -> String {
+    public static func render(_ document: Document, maxRecords: Int = 4_000,
+                              stream: BiomeSchema.Stream? = nil) -> String {
         var lines: [String] = []
-        var summary = "\(document.version.rawValue) · \(document.records.count) record"
+        var summary = document.version.rawValue
+        if let stream { summary += " · \(stream.title) (\(stream.name))" }
+        summary += " · \(document.records.count) record"
             + (document.records.count == 1 ? "" : "s")
         if let created = document.created {
             summary += " · created \(timestampFormatter.string(from: created))"
@@ -253,7 +256,7 @@ public enum SEGB {
             if record.data.isEmpty {
                 lines.append("  (empty)")
             } else if let fields = ProtobufSnoop.decode(record.data) {
-                lines.append(contentsOf: ProtobufSnoop.describe(fields, indent: 1))
+                lines.append(contentsOf: ProtobufSnoop.describe(fields, indent: 1, stream: stream))
             } else {
                 // Not protobuf: fall back to whatever text is in there.
                 let runs = BinaryText.runs(in: record.data, limit: 200)

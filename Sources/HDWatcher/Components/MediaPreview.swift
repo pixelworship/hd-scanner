@@ -62,6 +62,15 @@ struct MediaPreviewPane: View {
             Label(kind.displayName, systemImage: kind.symbolName)
                 .font(.caption.weight(.medium))
                 .foregroundStyle(.secondary)
+            // Naming the stream is most of what makes a Biome file legible:
+            // the file itself is called 797995217225977.
+            if let stream = BiomeSchema.stream(forFilePath: version.path) {
+                Text(stream.title)
+                    .font(.caption2.weight(.medium))
+                    .padding(.horizontal, 6).padding(.vertical, 2)
+                    .background(.green.opacity(0.15), in: Capsule())
+                    .help("\(stream.name) · \(stream.fieldCount) fields named from iLEAPP's parsers")
+            }
             if let dimensions {
                 Text(dimensions).font(.caption2).foregroundStyle(.tertiary)
             }
@@ -127,6 +136,7 @@ struct MediaPreviewPane: View {
         BinaryVersionPane(identity: identity,
                           data: data,
                           byteCount: version.byteSize,
+                          streamPath: version.path,
                           comparison: comparison?.data,
                           comparisonLabel: comparison.map { "v\($0.version.generation)" },
                           onPickComparison: onPickComparison)
@@ -214,6 +224,9 @@ struct BinaryVersionPane: View {
     let identity: String
     let data: Data
     let byteCount: Int64
+    /// Where the file lives, which is the only thing that says which Biome
+    /// stream it belongs to — the files themselves are named by number.
+    var streamPath: String?
     var comparison: Data?
     var comparisonLabel: String?
     var onPickComparison: (() -> Void)?
@@ -493,7 +506,8 @@ struct BinaryVersionPane: View {
         base = nil
         diff = nil
         let bytes = data
-        let built = await Task.detached(priority: .userInitiated) { Self.build(bytes) }.value
+        let stream = streamPath.flatMap { BiomeSchema.stream(forFilePath: $0) }
+        let built = await Task.detached(priority: .userInitiated) { Self.build(bytes, stream: stream) }.value
         base = built
         mode = Self.defaultMode(for: built)
     }
@@ -503,13 +517,14 @@ struct BinaryVersionPane: View {
         isDiffing = true
         defer { isDiffing = false }
         let mine = data
+        let stream = streamPath.flatMap { BiomeSchema.stream(forFilePath: $0) }
         diff = await Task.detached(priority: .userInitiated) { () -> DiffPayload in
             switch mode {
             case .hex:
                 return .bytes(BinaryDiff.compare(other, mine))
             case .records:
-                return .lines(TextDiff.compare(Self.renderRecords(of: other) ?? "",
-                                               Self.renderRecords(of: mine) ?? ""))
+                return .lines(TextDiff.compare(Self.renderRecords(of: other, stream: stream) ?? "",
+                                               Self.renderRecords(of: mine, stream: stream) ?? ""))
             case .strings:
                 return .lines(TextDiff.compare(BinaryText.plainText(in: other),
                                                BinaryText.plainText(in: mine)))
@@ -519,7 +534,7 @@ struct BinaryVersionPane: View {
         }.value
     }
 
-    nonisolated private static func build(_ data: Data) -> Base {
+    nonisolated private static func build(_ data: Data, stream: BiomeSchema.Stream? = nil) -> Base {
         let hexSlice = data.prefix(hexByteLimit)
         let rows = stride(from: 0, to: hexSlice.count, by: 16).map { start -> HexRow in
             let chunk = [UInt8](hexSlice[hexSlice.startIndex + start..<hexSlice.startIndex + min(start + 16, hexSlice.count)])
@@ -533,7 +548,7 @@ struct BinaryVersionPane: View {
             return HexRow(offset: start, hex: hex, ascii: ascii)
         }
         let raw = BinaryText.rawLines(of: data)
-        return Base(recordText: renderRecords(of: data),
+        return Base(recordText: renderRecords(of: data, stream: stream),
                     strings: BinaryText.runs(in: data),
                     rawLines: raw.lines,
                     rawTruncated: raw.truncated,
@@ -542,9 +557,10 @@ struct BinaryVersionPane: View {
                     readableFraction: BinaryText.readableFraction(of: data))
     }
 
-    nonisolated private static func renderRecords(of data: Data) -> String? {
+    nonisolated private static func renderRecords(of data: Data,
+                                                  stream: BiomeSchema.Stream?) -> String? {
         guard let document = SEGB.parse(data) else { return nil }
-        return SEGB.render(document)
+        return SEGB.render(document, stream: stream)
     }
 
     nonisolated private static func rawText(of data: Data) -> String {

@@ -134,7 +134,7 @@ public final class ContentSearchEngine: @unchecked Sendable {
             return .text(cached, sourceHint(for: cached))
         }
         guard let data = read(snapshot) else { return nil }
-        let (text, source) = Self.extract(from: data)
+        let (text, source) = Self.extract(from: data, path: snapshot.path)
         guard let text else { return .bytes(data) }
         if !snapshot.contentHash.isEmpty { store(text, for: snapshot.contentHash) }
         return .text(text, source)
@@ -155,9 +155,11 @@ public final class ContentSearchEngine: @unchecked Sendable {
     /// can see on screen.
     /// Returns nil when the content has no better textual form than its own
     /// bytes, which is the signal to search it byte-wise instead.
-    static func extract(from data: Data) -> (String?, Hit.Source) {
+    static func extract(from data: Data, path: String = "") -> (String?, Hit.Source) {
         if let document = SEGB.parse(data) {
-            return (SEGB.render(document), .records)
+            // Rendered with names where we have them, so a search for
+            // "Foreground" or a bundle identifier matches what the reader sees.
+            return (SEGB.render(document, stream: BiomeSchema.stream(forFilePath: path)), .records)
         }
         if FileSnapshot.looksTextual(data), let text = String(data: data, encoding: .utf8) {
             return (text, .text)

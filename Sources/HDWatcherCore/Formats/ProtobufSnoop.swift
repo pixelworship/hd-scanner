@@ -117,25 +117,40 @@ public enum ProtobufSnoop {
     // MARK: - Rendering
 
     /// Renders the decoded tree as indented text.
-    public static func describe(_ fields: [Field], indent: Int = 0) -> [String] {
+    ///
+    /// With a schema the field numbers gain names and the values gain meaning:
+    /// `Action (3): 1 · Foreground` rather than `3: 1`. Without one the
+    /// structure is still complete, just anonymous.
+    public static func describe(_ fields: [Field], indent: Int = 0,
+                                stream: BiomeSchema.Stream? = nil,
+                                prefix: String = "") -> [String] {
         let pad = String(repeating: "  ", count: indent)
         var lines: [String] = []
         for field in fields {
+            let path = prefix.isEmpty ? "\(field.number)" : "\(prefix).\(field.number)"
+            let spec = stream?.field(at: path)
+            let name = spec.map { "\($0.label) (\(field.number))" } ?? "\(field.number)"
+
             switch field.value {
             case .varint(let value):
-                lines.append("\(pad)\(field.number): \(value)\(timestampHint(seconds: Double(value)))")
+                let meaning = BiomeSchema.describe(Double(value), field: spec)
+                    .map { " · \($0)" } ?? timestampHint(seconds: Double(value), known: spec != nil)
+                lines.append("\(pad)\(name): \(value)\(meaning)")
             case .fixed64(let raw):
                 let double = Double(bitPattern: raw)
-                lines.append("\(pad)\(field.number): \(formatted(double))\(timestampHint(seconds: double)) (0x\(String(raw, radix: 16)))")
+                let meaning = BiomeSchema.describe(double, field: spec)
+                    .map { " · \($0)" } ?? timestampHint(seconds: double, known: spec != nil)
+                lines.append("\(pad)\(name): \(formatted(double))\(meaning) (0x\(String(raw, radix: 16)))")
             case .fixed32(let raw):
-                lines.append("\(pad)\(field.number): \(raw) (0x\(String(raw, radix: 16)))")
+                lines.append("\(pad)\(name): \(raw) (0x\(String(raw, radix: 16)))")
             case .text(let text):
-                lines.append("\(pad)\(field.number): \"\(text)\"")
+                lines.append("\(pad)\(name): \"\(text)\"")
             case .bytes(let data):
-                lines.append("\(pad)\(field.number): <\(data.count) bytes> \(data.prefix(24).map { String(format: "%02x", $0) }.joined())")
+                lines.append("\(pad)\(name): <\(data.count) bytes> \(data.prefix(24).map { String(format: "%02x", $0) }.joined())")
             case .message(let nested):
-                lines.append("\(pad)\(field.number): {")
-                lines.append(contentsOf: describe(nested, indent: indent + 1))
+                lines.append("\(pad)\(name): {")
+                lines.append(contentsOf: describe(nested, indent: indent + 1,
+                                                  stream: stream, prefix: path))
                 lines.append("\(pad)}")
             }
         }
@@ -151,7 +166,10 @@ public enum ProtobufSnoop {
     /// Apple stores dates as seconds since 2001. Values in that range are
     /// almost always timestamps, and reading one as a date rather than a large
     /// number is usually the difference between a useful record and a blob.
-    private static func timestampHint(seconds: Double) -> String {
+    private static func timestampHint(seconds: Double, known: Bool = false) -> String {
+        // A schema that says this field is not a date is better evidence than
+        // the value happening to fall in the plausible range.
+        guard !known else { return "" }
         guard seconds > 100_000_000, seconds < 4_000_000_000 else { return "" }
         let date = Date(timeIntervalSinceReferenceDate: seconds)
         return "  · \(Self.formatter.string(from: date))"

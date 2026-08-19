@@ -310,6 +310,31 @@ recoverable; names are not). Reference-date doubles are rendered as dates. The
 format follows [CCL Forensics' `ccl_segb`](https://github.com/cclgroupltd/ccl-segb),
 against which the test fixtures are verified byte for byte.
 
+**Field names for 89 streams.** The wire format carries field *numbers*, never
+names, and Apple publishes no `.proto` files, so a decoded record reads
+`6: "com.apple.mobilesafari"` — structurally correct and nearly useless. The
+names, units and value meanings come from the Biome parsers in
+[iLEAPP](https://github.com/abrignoni/iLEAPP) (MIT, Alexis Brignoni and
+contributors), where they were established stream by stream by comparing many
+devices against known activity. `Scripts/extract-biome-schema.py` reads a
+checked-out iLEAPP tree and derives `BiomeSchemaTable.swift` from it: 89 streams,
+364 named fields, 16 value tables. Records then read
+
+```
+In Focus (App.InFocus)
+Bundle ID (6): "com.apple.mobilesafari"
+Action (3): 1 · Foreground
+Start Time (4): 2026-08-18 14:14:03
+```
+
+A known field also *suppresses* guessing: without a schema any number in the
+plausible range is annotated as a date, and a schema saying "this is a lock
+state" is better evidence than the value happening to look like a timestamp.
+Extraction is deliberately conservative — a label is accepted only from a table
+header, an explicit comment, or a variable in the artifact's own function, and a
+value table is attached only to the exact field it interprets. A wrong name is
+worse than no name.
+
 **Open Records** opens the whole parsed file in a window of its own: every
 record listed with timestamp, state and CRC result, searchable by content,
 filterable to deleted or CRC-failed records, with each record's decoded fields,
@@ -539,7 +564,7 @@ Tests/HDWatcherCoreTests/    unit + live filesystem integration tests
 swift test
 ```
 
-228 tests, runnable with `swift test` or through the Xcode scheme. Unit tests cover the vault, log round-trips, tamper detection, rule
+236 tests, runnable with `swift test` or through the Xcode scheme. Unit tests cover the vault, log round-trips, tamper detection, rule
 matching, burst and cooldown behaviour, hotspot rollup, filtering, the content
 container (capture, dedup, retention, restore, compaction, encryption at rest)
 the diff engine, and volume classification. Integration tests mount a real disk

@@ -38,7 +38,11 @@ public enum AnalysisPrompt {
         lines.append("Detected type: \(typeDescription(data: data, kind: kind))")
         lines.append("")
 
-        let (body, truncated, used) = contents(data: data, kind: kind, budget: budget)
+        if let stream = BiomeSchema.stream(forFilePath: snapshot.path) {
+            lines.append("Biome stream: \(stream.name) — \(stream.title). Field names below come from the iLEAPP project's parsers.")
+        }
+        let (body, truncated, used) = contents(data: data, kind: kind,
+                                               path: snapshot.path, budget: budget)
         lines.append("Contents:")
         lines.append("```")
         lines.append(body)
@@ -59,9 +63,11 @@ public enum AnalysisPrompt {
 
     /// Picks the most informative representation the format allows, rather than
     /// sending raw bytes for everything.
-    private static func contents(data: Data, kind: PreviewKind, budget: Int) -> (String, Bool, Int) {
+    private static func contents(data: Data, kind: PreviewKind, path: String,
+                                 budget: Int) -> (String, Bool, Int) {
         if let document = SEGB.parse(data) {
-            let rendered = SEGB.render(document, maxRecords: 60)
+            let rendered = SEGB.render(document, maxRecords: 60,
+                                       stream: BiomeSchema.stream(forFilePath: path))
             return clip(rendered, budget: budget, source: data.count)
         }
         if kind == .text, let text = String(data: data, encoding: .utf8) {

@@ -11,6 +11,8 @@ struct ParsedRecords: Sendable {
     let document: SEGB.Document
     let records: [RenderedRecord]
     let fullText: String
+    /// The stream this file belongs to, when it is one we have names for.
+    let stream: BiomeSchema.Stream?
 
     struct RenderedRecord: Identifiable, Sendable {
         let id: Int
@@ -25,12 +27,13 @@ struct ParsedRecords: Sendable {
     /// lookup rather than a parse.
     static func build(from data: Data, snapshot: FileSnapshot) -> ParsedRecords? {
         guard let document = SEGB.parse(data, maxRecords: 200_000) else { return nil }
+        let stream = BiomeSchema.stream(forFilePath: snapshot.path)
         let rendered = document.records.map { record -> RenderedRecord in
             let lines: [String]
             if record.data.isEmpty {
                 lines = ["(empty)"]
             } else if let fields = ProtobufSnoop.decode(record.data) {
-                lines = ProtobufSnoop.describe(fields)
+                lines = ProtobufSnoop.describe(fields, stream: stream)
             } else {
                 let runs = BinaryText.runs(in: record.data, limit: 500)
                 lines = runs.isEmpty
@@ -46,7 +49,8 @@ struct ParsedRecords: Sendable {
                              capturedAt: snapshot.capturedAt,
                              document: document,
                              records: rendered,
-                             fullText: SEGB.render(document, maxRecords: 200_000))
+                             fullText: SEGB.render(document, maxRecords: 200_000, stream: stream),
+                             stream: stream)
     }
 }
 
@@ -143,6 +147,14 @@ struct SEGBBrowserView: View {
                     .font(.caption.weight(.semibold))
                     .padding(.horizontal, 8).padding(.vertical, 3)
                     .background(.blue.opacity(0.15), in: Capsule())
+
+                if let stream = parsed.stream {
+                    Text(stream.title)
+                        .font(.caption.weight(.semibold))
+                        .padding(.horizontal, 8).padding(.vertical, 3)
+                        .background(.green.opacity(0.15), in: Capsule())
+                        .help("\(stream.name) · \(stream.fieldCount) named fields, from iLEAPP's parsers")
+                }
 
                 Text("\(Format.count(parsed.document.records.count)) records")
                     .font(.caption).foregroundStyle(.secondary)
@@ -298,7 +310,8 @@ struct SEGBBrowserView: View {
                 case .hex:
                     BinaryVersionPane(identity: "record-\(entry.id)",
                                       data: entry.record.data,
-                                      byteCount: Int64(entry.record.data.count))
+                                      byteCount: Int64(entry.record.data.count),
+                                      streamPath: parsed.path)
                 case .strings:
                     PlainTextScrollView(text: BinaryText.plainText(in: entry.record.data))
                 }
