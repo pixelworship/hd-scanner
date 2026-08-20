@@ -122,6 +122,12 @@ final class AppModel {
     /// True when the agent is recording, so the app stays out of its way.
     var isViewerMode: Bool { agentStatus?.isAlive == true }
 
+    /// Coverage as reported by whoever is holding the FSEvents stream, which is
+    /// usually the daemon rather than this app.
+    var coverage: CoverageReport {
+        CoverageReport.resolve(agent: agentStatus, engine: status)
+    }
+
     // Environment
     var fullDiskAccess: Permissions.FullDiskAccess = .unknown
     var notificationStatus: Notifier.Availability = .unknown

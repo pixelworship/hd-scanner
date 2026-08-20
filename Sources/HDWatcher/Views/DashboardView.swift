@@ -30,7 +30,7 @@ struct DashboardView: View {
                              symbol: "bell", tint: model.unacknowledgedAlertCount > 0 ? .red : .green)
 
                     StatTile(title: "Volumes watched",
-                             value: "\(model.status.watchedPaths.count)",
+                             value: "\(model.coverage.watchedPaths.count)",
                              caption: "\(model.volumes.count) mounted",
                              symbol: "externaldrive", tint: .orange)
 

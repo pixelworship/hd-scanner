@@ -242,26 +242,40 @@ struct MonitoringSettings: View {
         .card()
     }
 
+    /// One line on what the watch roots amount to.
+    private func coverageDetail(_ coverage: CoverageReport, watched: [String]) -> String {
+        guard !watched.isEmpty else {
+            return "Nothing is holding an FSEvents stream, so no changes are being recorded."
+        }
+        if watched.contains("/") {
+            return "A watch on / covers every volume mounted beneath it, including external drives."
+        }
+        return "Watching \(watched.count) specific root\(watched.count == 1 ? "" : "s")."
+    }
+
     /// Answers the question the permission probe does not: what is actually
     /// being watched, and is anything being left out?
     private var coverageCard: some View {
-        let watched = model.status.watchedPaths
+        // Asked of whoever is actually recording. When the daemon is running,
+        // the app's own engine is deliberately idle, and reporting its roots
+        // here would say "not watching anything" about a Mac being watched
+        // continuously by a root process.
+        let coverage = model.coverage
+        let watched = coverage.watchedPaths
         let volumes = model.volumes
-        let uncovered = volumes.filter { volume in
-            !watched.contains { root in
-                root == "/" || volume.mountPath == root || volume.mountPath.hasPrefix(root + "/")
-            }
-        }
+        let uncovered = volumes.filter { !coverage.covers(mountPath: $0.mountPath) }
 
         return VStack(alignment: .leading, spacing: 10) {
             SectionHeader(title: "Disk coverage",
-                          subtitle: "Which volumes are being recorded right now")
+                          subtitle: coverage.isRecording
+                            ? "Which volumes \(coverage.recorder.displayName) is recording right now"
+                            : "Which volumes are being recorded right now")
 
             HStack(spacing: 10) {
-                Image(systemName: uncovered.isEmpty && !watched.isEmpty
-                      ? "checkmark.circle.fill" : "exclamationmark.triangle.fill")
+                let healthy = coverage.isRecording && uncovered.isEmpty && !watched.isEmpty
+                Image(systemName: healthy ? "checkmark.circle.fill" : "exclamationmark.triangle.fill")
                     .font(.title2)
-                    .foregroundStyle(uncovered.isEmpty && !watched.isEmpty ? .green : .orange)
+                    .foregroundStyle(healthy ? .green : .orange)
                 VStack(alignment: .leading, spacing: 2) {
                     Text(watched.isEmpty
                          ? "Not watching anything"
@@ -269,9 +283,7 @@ struct MonitoringSettings: View {
                             ? "All \(volumes.count) mounted volume\(volumes.count == 1 ? "" : "s") covered"
                             : "\(uncovered.count) volume\(uncovered.count == 1 ? "" : "s") not covered"))
                         .font(.callout.weight(.medium))
-                    Text(watched.contains("/")
-                         ? "A watch on / covers every volume mounted beneath it, including external drives."
-                         : "Watching \(watched.count) specific root\(watched.count == 1 ? "" : "s").")
+                    Text(coverageDetail(coverage, watched: watched))
                         .font(.caption).foregroundStyle(.secondary)
                         .fixedSize(horizontal: false, vertical: true)
                 }
@@ -305,6 +317,12 @@ struct MonitoringSettings: View {
                 if watched.isEmpty {
                     Text("none — monitoring is not running")
                         .font(.caption).foregroundStyle(.orange)
+                } else if !coverage.isRecording {
+                    Text("\(watched.count) root\(watched.count == 1 ? "" : "s"), but recording is paused")
+                        .font(.caption).foregroundStyle(.orange)
+                    ForEach(watched, id: \.self) { path in
+                        Text(path).font(.caption.monospaced()).foregroundStyle(.secondary)
+                    }
                 } else {
                     ForEach(watched, id: \.self) { path in
                         Text(path).font(.caption.monospaced()).foregroundStyle(.secondary)
@@ -318,8 +336,8 @@ struct MonitoringSettings: View {
             Divider()
             VStack(alignment: .leading, spacing: 3) {
                 Text("Coverage over time").font(.caption.weight(.medium))
-                if let started = model.status.startedAt {
-                    Text("Recording since \(Format.fullTimestamp(started)).")
+                if let started = coverage.startedAt {
+                    Text("\(coverage.recorder.displayName.capitalizedFirst) has been recording since \(Format.fullTimestamp(started)).")
                         .font(.caption).foregroundStyle(.secondary)
                 } else {
                     Text("Not currently recording.")
@@ -1086,5 +1104,14 @@ struct BackgroundServiceSettings: View {
                 : "Background recording is off."
             messageIsError = false
         }
+    }
+}
+
+extension String {
+    /// Capitalises only the first character, leaving the rest — "the background
+    /// daemon" must not become "The Background Daemon".
+    var capitalizedFirst: String {
+        guard let first else { return self }
+        return first.uppercased() + dropFirst()
     }
 }

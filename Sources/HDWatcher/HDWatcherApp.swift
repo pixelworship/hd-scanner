@@ -67,7 +67,7 @@ struct MenuBarContent: View {
         if model.phase == .unlocked {
             Text(model.isViewerMode
                  ? "Recording in the background"
-                 : (model.isMonitoring ? "Monitoring \(model.status.watchedPaths.count) path(s)" : "Paused"))
+                 : (model.isMonitoring ? "Monitoring \(model.coverage.watchedPaths.count) path(s)" : "Paused"))
             Text("\(model.recordingSummary) · \(model.unacknowledgedAlertCount) new alerts")
             Divider()
             if !model.isViewerMode {

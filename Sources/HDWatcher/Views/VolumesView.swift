@@ -10,7 +10,7 @@ struct VolumesView: View {
             VStack(alignment: .leading, spacing: 16) {
                 HStack(alignment: .top) {
                     SectionHeader(title: "Mounted volumes",
-                                  subtitle: "\(model.volumes.count) volumes · \(model.status.watchedPaths.count) watch root\(model.status.watchedPaths.count == 1 ? "" : "s") active")
+                                  subtitle: "\(model.volumes.count) volumes · \(model.coverage.watchedPaths.count) watch root\(model.coverage.watchedPaths.count == 1 ? "" : "s") active")
                     Spacer()
                     Toggle(isOn: $showSystemVolumes) {
                         Label("System volumes", systemImage: "gearshape.2")
@@ -24,7 +24,7 @@ struct VolumesView: View {
                     ForEach(model.volumes) { volume in
                         VolumeCard(volume: volume,
                                    stat: model.engine?.stats.volumeStat(volume.id),
-                                   isWatched: model.status.watchedPaths.contains { volume.mountPath.hasPrefix($0) })
+                                   isWatched: model.coverage.covers(mountPath: volume.mountPath))
                     }
                 }
 
@@ -35,7 +35,7 @@ struct VolumesView: View {
                         ForEach(model.systemVolumes) { volume in
                             VolumeCard(volume: volume,
                                        stat: model.engine?.stats.volumeStat(volume.id),
-                                       isWatched: model.status.watchedPaths.contains { volume.mountPath.hasPrefix($0) })
+                                       isWatched: model.coverage.covers(mountPath: volume.mountPath))
                                 .opacity(0.7)
                         }
                     }
@@ -73,10 +73,10 @@ struct VolumesView: View {
         VStack(alignment: .leading, spacing: 8) {
             SectionHeader(title: "Watch roots",
                           subtitle: "Paths handed to FSEvents. Everything beneath them is covered.")
-            if model.status.watchedPaths.isEmpty {
+            if model.coverage.watchedPaths.isEmpty {
                 Text("Monitoring is not running.").font(.caption).foregroundStyle(.secondary)
             } else {
-                ForEach(model.status.watchedPaths, id: \.self) { path in
+                ForEach(model.coverage.watchedPaths, id: \.self) { path in
                     HStack(spacing: 6) {
                         Image(systemName: "folder").font(.caption).foregroundStyle(.secondary)
                         Text(path).font(.caption.monospaced()).textSelection(.enabled)
