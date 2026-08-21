@@ -183,8 +183,7 @@ final class Agent {
 
     /// Picks up changes the app makes without needing to be restarted.
     private func reloadConfiguration(force: Bool) {
-        guard let loaded = AgentConfiguration.read(from: AgentPaths.systemConfiguration)
-                ?? DaemonKeyLocator.configuration(ownerHome: ownerHome) else {
+        guard let loaded = AgentConfiguration.readNewest(user: ownerConfigurationURL) else {
             if force { log("no configuration found; using defaults") }
             return
         }
@@ -210,6 +209,14 @@ final class Agent {
             engine?.ruleEngine.setRules(loaded.rules)
             if !force { log("configuration reloaded") }
         }
+    }
+
+    /// Where the app publishes configuration for this daemon: the home of the
+    /// user whose ingest key was pinned.
+    private var ownerConfigurationURL: URL? {
+        guard let ownerHome else { return nil }
+        return AppPaths.userSupportDirectory(home: ownerHome)
+            .appendingPathComponent("agent-config.enc")
     }
 
     /// Periodically checks that nothing has interfered with the audit storage.

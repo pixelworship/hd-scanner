@@ -115,13 +115,18 @@ public enum BackgroundService {
     public static func publishConfiguration(settings: AppSettings, rules: [AlertRule]) -> Bool {
         let configuration = AgentConfiguration(from: settings, rules: rules,
                                                enabled: settings.backgroundRecordingEnabled)
-        // A daemon in /Library reads from there; a recorder in the user's own
-        // directory reads from the user's copy.
-        let target = DaemonIdentity.exists && AppPaths.systemSupportDirectory.path
-            != AppPaths.supportDirectory.path
-            ? AgentPaths.systemConfiguration
-            : AgentPaths.configuration
-        return configuration.write(to: target)
+
+        // The copy in the user's own directory is the one that always works:
+        // this app runs unprivileged and cannot write into /Library, and a
+        // root daemon can read any file. The privileged copy is still written
+        // when it can be — it outranks the user's own when it is newer — but
+        // publishing must not depend on it.
+        var published = configuration.write(to: AgentPaths.configuration)
+        if AppPaths.systemSupportDirectory.path != AppPaths.supportDirectory.path,
+           configuration.write(to: AgentPaths.systemConfiguration) {
+            published = true
+        }
+        return published
     }
 
     /// Registers the daemon if the user wants it and it is not already set up.

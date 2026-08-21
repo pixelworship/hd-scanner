@@ -355,8 +355,13 @@ final class AppModel {
         agentStatus = BackgroundService.status(using: vault.currentKeys)
     }
 
+    /// True when the daemon has actually been given the current settings. The
+    /// app cannot write into /Library, so this is not a formality.
+    var agentConfigurationPublished = false
+
     func publishAgentConfiguration() {
-        BackgroundService.publishConfiguration(settings: settings, rules: rules)
+        agentConfigurationPublished =
+            BackgroundService.publishConfiguration(settings: settings, rules: rules)
     }
 
     func setBackgroundRecording(_ enabled: Bool) -> String? {

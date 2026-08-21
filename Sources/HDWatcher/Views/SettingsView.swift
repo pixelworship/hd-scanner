@@ -997,6 +997,21 @@ struct BackgroundServiceSettings: View {
                         Text("\(status.watchedPaths.count)")
                     }
                     GridRow {
+                        Text("Your settings").font(.caption).foregroundStyle(.secondary)
+                        // The app cannot write into /Library, so a daemon
+                        // running on defaults while the app believed it had
+                        // published everything is a real failure mode, not a
+                        // theoretical one.
+                        Label(model.agentConfigurationPublished ? "Published" : "Not published",
+                              systemImage: model.agentConfigurationPublished
+                                ? "checkmark.seal" : "exclamationmark.triangle.fill")
+                            .font(.caption)
+                            .foregroundStyle(model.agentConfigurationPublished ? Color.green : Color.orange)
+                            .help(model.agentConfigurationPublished
+                                  ? "The daemon is watching what these screens say it is."
+                                  : "The daemon is recording with defaults: your filters, rules and capture settings have not reached it.")
+                    }
+                    GridRow {
                         Text("Last heartbeat").font(.caption).foregroundStyle(.secondary)
                         Text(Format.relativeTime(status.heartbeat))
                     }
@@ -1034,10 +1049,11 @@ struct BackgroundServiceSettings: View {
 
             macOS asks for an administrator to approve it, and will only run it from /Applications.
 
-            Its configuration — what to watch and which rules to apply — is a plaintext file in \
-            your home, because the daemon starts with no key available to it. That file describes \
-            what you monitor; it never contains recorded activity. The daemon pins the first ingest \
-            key it sees, so nobody can swap in their own and have future events sealed to them.
+            Its configuration — what to watch and which rules to apply — is sealed to the \
+            daemon's own Secure Enclave key and left in your home, where this app can write it and \
+            root can read it. Nothing about what you monitor is on disk in the clear. The daemon \
+            pins the first ingest key it sees, so nobody can swap in their own and have future \
+            events sealed to them.
 
             While the daemon is recording, this app stops watching the filesystem itself and \
             becomes a viewer, so nothing is counted twice.

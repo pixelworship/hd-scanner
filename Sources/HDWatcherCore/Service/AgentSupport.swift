@@ -283,7 +283,13 @@ public struct AgentConfiguration: Codable, Sendable {
     }
 
     /// Seals configuration so only the daemon can read it. Returns false when
-    /// the daemon has not published its key yet — it has to run once first.
+    /// the daemon has not published its key yet — it has to run once first —
+    /// or when the file could not be written.
+    ///
+    /// Reporting the write honestly matters more than it looks: the app cannot
+    /// write into `/Library`, and swallowing that failure left the daemon
+    /// running on defaults for days while the app believed it had published
+    /// every setting the user had chosen.
     @discardableResult
     public func write(to url: URL = AgentPaths.configuration) -> Bool {
         let encoder = JSONEncoder()
@@ -291,10 +297,34 @@ public struct AgentConfiguration: Codable, Sendable {
         guard let plaintext = try? encoder.encode(self),
               let sealed = DaemonIdentity.seal(plaintext, context: "hdwatcher.agent.config")
         else { return false }
-        try? sealed.write(to: url, options: [.atomic])
+        do {
+            try sealed.write(to: url, options: [.atomic])
+        } catch {
+            return false
+        }
         try? FileManager.default.setAttributes([.posixPermissions: 0o644],
                                                ofItemAtPath: url.path)
         return true
+    }
+
+    /// Reads whichever copy is newer.
+    ///
+    /// There are two: one in `/Library` that only root can write, and one in
+    /// the owner's home that the app writes for itself. Preferring the
+    /// privileged copy unconditionally means a stale root-owned file outranks
+    /// everything the user has changed since.
+    public static func readNewest(system: URL = AgentPaths.systemConfiguration,
+                                  user: URL?) -> AgentConfiguration? {
+        let candidates = [system, user].compactMap { $0 }
+        let dated = candidates.compactMap { url -> (URL, Date)? in
+            guard let modified = (try? FileManager.default.attributesOfItem(atPath: url.path))?[.modificationDate] as? Date
+            else { return nil }
+            return (url, modified)
+        }
+        for (url, _) in dated.sorted(by: { $0.1 > $1.1 }) {
+            if let configuration = read(from: url) { return configuration }
+        }
+        return nil
     }
 }
 
