@@ -76,6 +76,40 @@ public enum BackgroundService {
         try service.register()
     }
 
+    /// Re-registers a service macOS has forgotten.
+    ///
+    /// After a system update `SMAppService` can report `enabled` for a daemon
+    /// launchd has no record of — `launchctl kickstart` answers "Could not find
+    /// service ... in domain for system". Unregistering first clears the stale
+    /// bookkeeping so the fresh registration takes.
+    public static func repair() throws {
+        guard #available(macOS 13.0, *) else {
+            throw CryptoError.secureEnclaveFailed("background daemons need macOS 13 or later")
+        }
+        guard isInTrustedLocation else {
+            throw CryptoError.secureEnclaveFailed(
+                "Move HDWatcher to /Applications first — macOS will not run a root daemon from \(bundleLocation)."
+            )
+        }
+        // Expected to fail when launchd has already dropped it; that is the
+        // situation being repaired, not an error.
+        try? service.unregister()
+        do {
+            try service.register()
+        } catch {
+            throw CryptoError.secureEnclaveFailed(explain(error))
+        }
+    }
+
+    /// Turns the terse errors this API produces into something actionable.
+    private static func explain(_ error: Error) -> String {
+        let text = error.localizedDescription
+        if text.contains("Operation not permitted") || (error as NSError).code == 1 {
+            return "macOS refused to register the daemon. It is most likely disabled at the launchd level; an administrator can clear that with: sudo launchctl enable system/\(AgentPaths.serviceLabel)"
+        }
+        return text
+    }
+
     public static func uninstall() throws {
         guard #available(macOS 13.0, *) else { return }
         try service.unregister()

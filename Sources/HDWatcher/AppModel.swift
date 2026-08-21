@@ -350,9 +350,56 @@ final class AppModel {
 
     // MARK: - Background agent
 
+    /// What the daemon is really doing, as opposed to what macOS says about it.
+    var daemonVerdict = DaemonSupervisor.Verdict(health: .startingUp, repair: .wait,
+                                                 summary: "Checking…", detail: "")
+    private var daemonRegisteredAt: Date?
+    private var daemonRepairAttempts = 0
+    private var lastDaemonRepair: Date?
+
     func refreshBackgroundService() {
         backgroundServiceState = BackgroundService.state
         agentStatus = BackgroundService.status(using: vault.currentKeys)
+
+        let verdict = DaemonSupervisor.assess(.init(
+            state: backgroundServiceState,
+            wanted: settings.backgroundRecordingEnabled,
+            heartbeat: agentStatus?.heartbeat,
+            processAlive: agentStatus.map { AgentStatus.processExists($0.pid) } ?? false,
+            registeredAt: daemonRegisteredAt,
+            repairAttempts: daemonRepairAttempts))
+        daemonVerdict = verdict
+
+        if verdict.health == .recording { daemonRepairAttempts = 0 }
+
+        // Repair without being asked: a daemon macOS has dropped is not
+        // something the user can be expected to notice, and the whole point of
+        // it is that it runs without anyone watching.
+        if DaemonSupervisor.shouldRepairAutomatically(verdict),
+           settings.backgroundRecordingEnabled,
+           lastDaemonRepair.map({ Date().timeIntervalSince($0) > DaemonSupervisor.startupGrace }) ?? true {
+            repairBackgroundService()
+        }
+    }
+
+    /// Unregisters and registers again, which is what fixes a service launchd
+    /// has forgotten.
+    @discardableResult
+    func repairBackgroundService() -> String? {
+        daemonRepairAttempts += 1
+        lastDaemonRepair = Date()
+        do {
+            try BackgroundService.repair()
+            daemonRegisteredAt = Date()
+            backgroundServiceState = BackgroundService.state
+            return nil
+        } catch {
+            daemonVerdict = DaemonSupervisor.Verdict(
+                health: daemonVerdict.health, repair: .askForHelp,
+                summary: "Could not re-register the daemon",
+                detail: error.localizedDescription)
+            return error.localizedDescription
+        }
     }
 
     /// True when the daemon has actually been given the current settings. The

@@ -190,7 +190,14 @@ public final class EncryptedLogWriter: @unchecked Sendable {
 
         // Seed the chain from this segment's header plus the previous segment's
         // final MAC, so removing an entire segment file breaks verification too.
-        let previousMAC = manifest.segments.last?.finalMAC ?? Data()
+        //
+        // It has to be the previous segment *of this lineage*, which is what
+        // verification walks. Taking whatever record happened to be appended
+        // last meant that a manifest holding another writer's segment — or a
+        // placeholder record — seeded the chain with a value the reader would
+        // never arrive at, and the next segment was then reported as altered.
+        let lineage = name.split(separator: "-").first.map(String.init) ?? "seg"
+        let previousMAC = manifest.segments.last { $0.lineage == lineage }?.finalMAC ?? Data()
         chainMAC = CryptoPrimitives.hmac(headerData + previousMAC, key: integrityKey)
 
         let record = SegmentRecord(segmentIndex: index, fileName: name,

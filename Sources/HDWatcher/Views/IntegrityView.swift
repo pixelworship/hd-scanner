@@ -82,6 +82,12 @@ struct IntegrityView: View {
         guard let report else {
             return "Run a verification to recompute the hash chain across every encrypted segment."
         }
+        if report.isIntact, report.chainBreaks > 0 {
+            // Verified, but with gaps in the joins between segments. Saying
+            // "intact" and nothing else would overstate it; saying "tampering"
+            // would be false.
+            return "\(report.chainBreaks) segment(s) verified on their own contents, but their link to earlier history is not recorded — a recorder was interrupted or restarted there"
+        }
         if report.isIntact {
             return "Verified \(report.totalBlocks) blocks across \(report.results.count) segments at \(Format.timeOfDay(report.checkedAt)). Every block's MAC matches, and the chain is unbroken."
         }

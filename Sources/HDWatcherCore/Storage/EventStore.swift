@@ -63,9 +63,16 @@ public final class EventStore: @unchecked Sendable {
             loaded = (try? EncryptedFileBox.read(LogManifest.self, from: manifestURL,
                                                  key: keys.settings, context: "manifest")) ?? nil
         case .writeOnly:
-            // The agent cannot read its own manifest back — it is sealed to a
-            // key the agent does not have — so it starts from what is on disk.
-            loaded = nil
+            // The published manifest is sealed to the ingest key, which the
+            // agent does not hold — it cannot read back what it wrote. So it
+            // keeps a second copy sealed to its *own* enclave key.
+            //
+            // Without it, every restart began from an empty manifest and then
+            // overwrote the published one with a single record, destroying the
+            // block counts and chain MACs of every earlier segment. The history
+            // survived on disk but became unverifiable, and the app reported
+            // the segments that followed as altered.
+            loaded = Self.readPrivateManifest(directory: directory)
         }
         self.manifest = loaded ?? LogManifest()
         // Clean up placeholder records left by an earlier build before anything
@@ -248,6 +255,10 @@ public final class EventStore: @unchecked Sendable {
         for record in reader.discoverSegments() where known.insert(record.fileName).inserted {
             combined.segments.append(record)
         }
+        // After merging, not before: the placeholder that an earlier build
+        // wrote lives in the *agent's* manifest, so purging the app's copy
+        // first let it straight back in.
+        combined.removingPhantomRecords()
         combined.segments.sort { $0.segmentIndex < $1.segmentIndex }
         combined.totalEvents = combined.segments.reduce(0) { $0 + $1.eventCount }
         return combined
@@ -335,11 +346,36 @@ public final class EventStore: @unchecked Sendable {
 
     // MARK: - Private
 
+    /// The agent's own copy, sealed to its enclave key so it can be read back
+    /// after a restart. Root-only: it describes the shape of the log.
+    static func privateManifestURL(directory: URL) -> URL {
+        directory.appendingPathComponent("manifest-agent-private.enc")
+    }
+
+    static func readPrivateManifest(directory: URL) -> LogManifest? {
+        let url = privateManifestURL(directory: directory)
+        guard let sealed = try? Data(contentsOf: url),
+              let plaintext = DaemonIdentity.open(sealed, context: "hdwatcher.agent.manifest.private"),
+              var manifest = try? JSONDecoder().decode(LogManifest.self, from: plaintext)
+        else { return nil }
+        manifest.removingPhantomRecords()
+        return manifest
+    }
+
     private func persistManifest(_ m: LogManifest) {
         switch mode {
         case .full(let keys):
             try? EncryptedFileBox.write(m, to: manifestURL, key: keys.settings, context: "manifest")
         case .writeOnly(let recipient):
+            // Keep the readable-by-us copy first: losing it is what made a
+            // restart destroy the record of everything written before.
+            if let plaintext = try? JSONEncoder().encode(m),
+               let mine = DaemonIdentity.seal(plaintext, context: "hdwatcher.agent.manifest.private") {
+                let url = Self.privateManifestURL(directory: directory)
+                try? mine.write(to: url, options: [.atomic])
+                try? FileManager.default.setAttributes([.posixPermissions: 0o600],
+                                                       ofItemAtPath: url.path)
+            }
             // Sealed to the ingest key, so the agent cannot read back even its
             // own bookkeeping; the app merges it in when it opens the log.
             guard let plaintext = try? JSONEncoder().encode(m),

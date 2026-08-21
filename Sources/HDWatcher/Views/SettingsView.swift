@@ -886,6 +886,53 @@ struct BackgroundServiceSettings: View {
                 Spacer(minLength: 8)
             }
 
+            // What to do about it, when there is something to do.
+            switch model.daemonVerdict.repair {
+            case .openLoginItems:
+                Button {
+                    BackgroundService.openLoginItemsSettings()
+                } label: {
+                    Label("Open Login Items", systemImage: "gearshape")
+                }
+                .buttonStyle(.borderedProminent)
+
+            case .reregister, .askForHelp:
+                HStack(spacing: 10) {
+                    Button {
+                        if let failure = model.repairBackgroundService() {
+                            message = failure
+                            messageIsError = true
+                        } else {
+                            message = "Re-registered the daemon with macOS."
+                            messageIsError = false
+                        }
+                        model.refreshBackgroundService()
+                    } label: {
+                        Label("Repair Now", systemImage: "wrench.and.screwdriver")
+                    }
+                    .buttonStyle(.borderedProminent)
+
+                    Button {
+                        BackgroundService.openLoginItemsSettings()
+                    } label: {
+                        Label("Login Items", systemImage: "gearshape")
+                    }
+                    Button {
+                        NSPasteboard.general.clearContents()
+                        NSPasteboard.general.setString(
+                            "sudo launchctl enable system/\(AgentPaths.serviceLabel)", forType: .string)
+                        message = "Copied the command an administrator can run."
+                        messageIsError = false
+                    } label: {
+                        Label("Copy Admin Command", systemImage: "terminal")
+                    }
+                }
+                .controlSize(.small)
+
+            case .none, .wait:
+                EmptyView()
+            }
+
             if !BackgroundService.isInTrustedLocation, !isInstalled {
                 HStack(alignment: .top, spacing: 9) {
                     Image(systemName: "exclamationmark.triangle.fill")
@@ -1068,45 +1115,32 @@ struct BackgroundServiceSettings: View {
         .card()
     }
 
+    // All four come from the supervisor's verdict rather than from
+    // SMAppService's own bookkeeping, which reports a service as installed
+    // long after launchd has dropped it.
     private var symbol: String {
-        switch model.backgroundServiceState {
-        case .enabled:          return model.isViewerMode ? "bolt.circle.fill" : "bolt.slash.circle"
-        case .requiresApproval: return "exclamationmark.triangle.fill"
-        default:                return "bolt.slash.circle"
+        switch model.daemonVerdict.health {
+        case .recording:        return "bolt.circle.fill"
+        case .startingUp:       return "clock.arrow.circlepath"
+        case .droppedByLaunchd,
+             .needsApproval:    return "exclamationmark.triangle.fill"
+        case .notInstalled,
+             .disabledByUser,
+             .unsupported:      return "bolt.slash.circle"
         }
     }
 
     private var tint: Color {
-        switch model.backgroundServiceState {
-        case .enabled:          return model.isViewerMode ? .green : .orange
-        case .requiresApproval: return .orange
-        default:                return .secondary
+        switch model.daemonVerdict.health {
+        case .recording:                       return .green
+        case .startingUp:                      return .blue
+        case .droppedByLaunchd, .needsApproval: return .orange
+        default:                               return .secondary
         }
     }
 
-    private var headline: String {
-        switch model.backgroundServiceState {
-        case .enabled:          return model.isViewerMode ? "Recording in the background" : "Installed, starting up"
-        case .requiresApproval: return "Approval needed"
-        case .unsupported:      return "Needs macOS 13 or later"
-        default:                return "Background recording is off"
-        }
-    }
-
-    private var subheadline: String {
-        switch model.backgroundServiceState {
-        case .enabled:
-            return model.isViewerMode
-                ? "Activity is being recorded whether or not this window is open, and from boot onward. This app is showing you what the daemon wrote."
-                : "The daemon is registered and should begin recording shortly."
-        case .requiresApproval:
-            return "macOS needs an administrator to allow HDWatcher under Login Items before the daemon can run."
-        case .unsupported:
-            return "Background daemons require macOS 13. Recording happens only while this app is open."
-        default:
-            return "Right now, activity is only recorded while this app is running. Turn this on to keep watching from boot, in a log the logged-in user cannot alter."
-        }
-    }
+    private var headline: String { model.daemonVerdict.summary }
+    private var subheadline: String { model.daemonVerdict.detail }
 
     private func perform(_ action: () -> String?) {
         working = true

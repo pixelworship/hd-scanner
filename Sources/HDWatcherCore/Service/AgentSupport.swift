@@ -9,6 +9,8 @@ import CryptoKit
 public enum AgentPaths {
     public static let label = "co.pixelworship.hdwatcher.daemon"
     public static let plistName = "co.pixelworship.hdwatcher.daemon.plist"
+    /// The launchd label, which is what `launchctl` commands need.
+    public static let serviceLabel = "co.pixelworship.hdwatcher.daemon"
 
     /// The daemon pins the first ingest key it sees into its own root-owned
     /// directory. After that it ignores the copy in the user's home, so a local
@@ -119,7 +121,7 @@ public struct AgentStatus: Codable, Sendable {
     /// even though the process is plainly there — reading that as "dead" made a
     /// perfectly healthy daemon show as unresponsive. EPERM is proof of
     /// existence; only ESRCH means gone.
-    static func processExists(_ pid: Int32) -> Bool {
+    public static func processExists(_ pid: Int32) -> Bool {
         guard pid > 0 else { return false }
         if kill(pid, 0) == 0 { return true }
         return errno == EPERM

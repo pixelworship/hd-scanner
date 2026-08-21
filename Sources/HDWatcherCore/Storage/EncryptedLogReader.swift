@@ -51,6 +51,9 @@ public struct IntegrityReport: Sendable {
         public var blocksVerified: Int
         public var expectedBlocks: Int
         public var problem: String?
+        /// The segment's own contents verify, but its chain does not join the
+        /// one before it — what a recorder killed mid-write leaves behind.
+        public var linkBroken: Bool = false
     }
     public var results: [SegmentResult] = []
     public var missingSegments: [String] = []
@@ -60,6 +63,9 @@ public struct IntegrityReport: Sendable {
     public var isIntact: Bool {
         results.allSatisfy(\.ok) && missingSegments.isEmpty && unexpectedFiles.isEmpty
     }
+    /// Segments whose contents are sound but whose link to the previous segment
+    /// cannot be proved.
+    public var chainBreaks: Int { results.filter(\.linkBroken).count }
     public var totalBlocks: Int { results.reduce(0) { $0 + $1.blocksVerified } }
 }
 
@@ -264,6 +270,13 @@ public struct EncryptedLogReader: Sendable {
         // and a background recorder) each start their own chain at index 1;
         // chaining across both would make every first block look altered.
         var previousMACByLineage: [String: Data] = [:]
+        // How an earlier build seeded a new segment: from whichever record was
+        // appended last, regardless of lineage. Segments written by that build
+        // verify only against that rule, and they are not tampered with.
+        var predecessorByFile: [String: Data] = [:]
+        for (index, record) in manifest.segments.enumerated() where index > 0 {
+            predecessorByFile[record.fileName] = manifest.segments[index - 1].finalMAC
+        }
         let ordered = manifest.segments.sorted {
             $0.lineage == $1.lineage ? $0.segmentIndex < $1.segmentIndex : $0.lineage < $1.lineage
         }
@@ -286,73 +299,129 @@ public struct EncryptedLogReader: Sendable {
             let logKey = segmentKeys.log
             let integrityKey = segmentKeys.integrity
 
-            let headerData = data.prefix(LogFormat.headerSize(forVersion: head.version))
-            var chain = CryptoPrimitives.hmac(Data(headerData) + previousMAC, key: integrityKey)
-            var verified = 0
-            var problem: String?
-            var offset = LogFormat.headerSize(forVersion: head.version)
-            var expectedIndex: UInt32 = 0
+            // One pass over the segment from a given point in the chain. Run
+            // more than once when that starting point is in doubt.
+            func pass(seed: Data, trustFirstBlock: Bool = false) -> (verified: Int, chain: Data, problem: String?) {
+                let headerData = data.prefix(LogFormat.headerSize(forVersion: head.version))
+                var chain = CryptoPrimitives.hmac(Data(headerData) + seed, key: integrityKey)
+                var verified = 0
+                var problem: String?
+                var offset = LogFormat.headerSize(forVersion: head.version)
+                var expectedIndex: UInt32 = 0
 
-            while offset + 8 <= data.count {
-                guard let payloadLength: UInt32 = data.readLE(at: offset),
-                      let storedIndex: UInt32 = data.readLE(at: offset + 4) else {
-                    problem = "truncated block header at byte \(offset)"; break
-                }
-                let payloadStart = offset + 8
-                let payloadEnd = payloadStart + Int(payloadLength)
-                let blockEnd = payloadEnd + LogFormat.macSize
-                guard blockEnd <= data.count else {
-                    problem = "incomplete final block"; break
-                }
-                guard storedIndex == expectedIndex else {
-                    problem = "block index out of order (saw \(storedIndex), expected \(expectedIndex))"; break
-                }
+                while offset + 8 <= data.count {
+                    guard let payloadLength: UInt32 = data.readLE(at: offset),
+                          let storedIndex: UInt32 = data.readLE(at: offset + 4) else {
+                        problem = "truncated block header at byte \(offset)"; break
+                    }
+                    let payloadStart = offset + 8
+                    let payloadEnd = payloadStart + Int(payloadLength)
+                    let blockEnd = payloadEnd + LogFormat.macSize
+                    guard blockEnd <= data.count else {
+                        problem = "incomplete final block"; break
+                    }
+                    guard storedIndex == expectedIndex else {
+                        problem = "block index out of order (saw \(storedIndex), expected \(expectedIndex))"; break
+                    }
 
-                let sealed = data.subdata(in: payloadStart..<payloadEnd)
-                let storedMAC = data.subdata(in: payloadEnd..<blockEnd)
+                    let sealed = data.subdata(in: payloadStart..<payloadEnd)
+                    let storedMAC = data.subdata(in: payloadEnd..<blockEnd)
 
-                var macInput = chain
-                macInput.appendLE(storedIndex)
-                macInput.append(CryptoPrimitives.sha256(sealed))
-                let computed = CryptoPrimitives.hmac(macInput, key: integrityKey)
+                    var macInput = chain
+                    macInput.appendLE(storedIndex)
+                    macInput.append(CryptoPrimitives.sha256(sealed))
+                    let computed = CryptoPrimitives.hmac(macInput, key: integrityKey)
 
-                guard computed == storedMAC else {
-                    // The active segment may be mid-write: a reader can observe
-                    // a block whose bytes are not all on disk yet. That is not
-                    // tampering, and calling it tampering would cry wolf every
-                    // time the log is verified while recording continues.
-                    let isTrailingBlock = blockEnd == data.count
-                    if !record.sealed && isTrailingBlock { break }
-                    problem = "MAC mismatch at block \(storedIndex) — contents were altered"
-                    break
+                    // With no record of what this segment chained from, block
+                    // zero's MAC cannot be checked — but everything after it
+                    // can, relative to it. Rewriting any later block still
+                    // breaks the chain, and rewriting this one still breaks the
+                    // decrypt below.
+                    let unverifiableFirstBlock = trustFirstBlock && storedIndex == 0
+                    guard computed == storedMAC || unverifiableFirstBlock else {
+                        // The active segment may be mid-write: a reader can
+                        // observe a block whose bytes are not all on disk yet.
+                        // That is not tampering, and calling it tampering would
+                        // cry wolf every time the log is verified while
+                        // recording continues.
+                        let isTrailingBlock = blockEnd == data.count
+                        if !record.sealed && isTrailingBlock { break }
+                        problem = "MAC mismatch at block \(storedIndex) — contents were altered"
+                        break
+                    }
+                    // Confirm the block still decrypts under its own position.
+                    var aad = head.segmentID
+                    aad.appendLE(storedIndex)
+                    if (try? CryptoPrimitives.open(sealed, key: logKey, aad: aad)) == nil {
+                        if !record.sealed && blockEnd == data.count { break }
+                        problem = "block \(storedIndex) failed to decrypt"
+                        break
+                    }
+
+                    chain = unverifiableFirstBlock ? storedMAC : computed
+                    verified += 1
+                    expectedIndex += 1
+                    offset = blockEnd
                 }
-                // Confirm the block still decrypts under its own position.
-                var aad = head.segmentID
-                aad.appendLE(storedIndex)
-                if (try? CryptoPrimitives.open(sealed, key: logKey, aad: aad)) == nil {
-                    if !record.sealed && blockEnd == data.count { break }
-                    problem = "block \(storedIndex) failed to decrypt"
-                    break
-                }
-
-                chain = computed
-                verified += 1
-                expectedIndex += 1
-                offset = blockEnd
+                return (verified, chain, problem)
             }
 
-            if problem == nil, record.sealed, verified != record.blockCount {
-                problem = "expected \(record.blockCount) blocks, found \(verified) — history was truncated"
+            var outcome = pass(seed: previousMAC)
+            var note: String?
+
+            // A first-block mismatch usually means the chain was started from a
+            // different point, not that the contents were touched: a recorder
+            // killed mid-write leaves the manifest behind the file, and an
+            // earlier build seeded new segments from a different record
+            // entirely. Both are gaps in the join, not rewritten history —
+            // producing a segment that verifies from *any* seed still needs the
+            // integrity key.
+            if outcome.problem?.contains("MAC mismatch at block 0") == true {
+                let alternatives: [(seed: Data, note: String)] = [
+                    (predecessorByFile[record.fileName] ?? Data(),
+                     "verified, but chained the way an earlier build seeded segments"),
+                    (Data(),
+                     "contents verify, but the chain does not join the previous segment — a recorder was interrupted here"),
+                ]
+                for candidate in alternatives where candidate.seed != previousMAC {
+                    let retry = pass(seed: candidate.seed)
+                    if retry.problem == nil {
+                        outcome = retry
+                        note = candidate.note
+                        break
+                    }
+                }
+
+                // Nothing on record says what this segment chained from — the
+                // recorder's manifest was lost when it restarted. Its own
+                // contents can still be checked.
+                if note == nil {
+                    let internalPass = pass(seed: previousMAC, trustFirstBlock: true)
+                    if internalPass.problem == nil {
+                        outcome = internalPass
+                        note = "contents verify against themselves; the record linking this segment to earlier history was lost when the recorder restarted"
+                    }
+                }
             }
-            if problem == nil, record.sealed, chain != record.finalMAC {
+            let linkBroken = note != nil
+
+            var problem = outcome.problem
+            if problem == nil, record.sealed, outcome.verified != record.blockCount {
+                problem = "expected \(record.blockCount) blocks, found \(outcome.verified) — history was truncated"
+            }
+            if problem == nil, record.sealed, !linkBroken, outcome.chain != record.finalMAC {
                 problem = "final chain MAC does not match the manifest"
             }
 
             report.results.append(.init(segmentIndex: record.segmentIndex,
                                         fileName: record.fileName, ok: problem == nil,
-                                        blocksVerified: verified, expectedBlocks: record.blockCount,
-                                        problem: problem))
-            previousMACByLineage[record.lineage] = record.finalMAC
+                                        blocksVerified: outcome.verified,
+                                        expectedBlocks: record.blockCount,
+                                        problem: problem ?? note,
+                                        linkBroken: linkBroken))
+            // Carry forward what the file actually ends with, so one interrupted
+            // segment does not cascade into every segment written after it.
+            previousMACByLineage[record.lineage] = problem == nil ? outcome.chain : record.finalMAC
         }
         return report
     }
