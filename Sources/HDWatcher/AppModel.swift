@@ -375,10 +375,29 @@ final class AppModel {
         // Repair without being asked: a daemon macOS has dropped is not
         // something the user can be expected to notice, and the whole point of
         // it is that it runs without anyone watching.
+        // A durably installed daemon is launchd's business, not ours: kicking
+        // SMAppService here would throw away an approval and start the loop the
+        // user has already been through too many times.
         if DaemonSupervisor.shouldRepairAutomatically(verdict),
+           !BackgroundService.Durable.isInstalled,
            settings.backgroundRecordingEnabled,
            lastDaemonRepair.map({ Date().timeIntervalSince($0) > DaemonSupervisor.startupGrace }) ?? true {
             repairBackgroundService()
+        }
+    }
+
+    /// Installs the daemon the durable way: one administrator prompt, then it
+    /// starts at every boot regardless of what happens to the app bundle.
+    @discardableResult
+    func installDaemonPermanently(uninstall: Bool = false) -> String? {
+        do {
+            try BackgroundService.Durable.install(uninstall: uninstall)
+            daemonRepairAttempts = 0
+            daemonRegisteredAt = Date()
+            refreshBackgroundService()
+            return nil
+        } catch {
+            return error.localizedDescription
         }
     }
 

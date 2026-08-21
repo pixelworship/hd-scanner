@@ -74,6 +74,21 @@ are currently visible.
 
 ## Always-on recording (privileged daemon)
 
+**Install it permanently.** Settings → Background → *Install Permanently* asks
+for an administrator password once and then the daemon is launchd's
+responsibility: binary at `/usr/local/libexec/hdwatcherd`, plist in
+`/Library/LaunchDaemons`, `RunAtLoad` and `KeepAlive`. It starts at every boot,
+before anyone logs in, and survives rebuilding the app and updating macOS.
+
+The `SMAppService` route the app offers first is the sanctioned one, but its
+registration is tied to the app's code signature and to an approval in Login
+Items: rebuild the app and the signature changes, update macOS and the approval
+can be withdrawn. Either way the daemon quietly stops starting at boot — the one
+thing it exists for — and the only sign is that nothing is being recorded. The
+same installer is in the repository as `Scripts/install-daemon.sh`; the app runs
+that exact file, shipped inside its own bundle so the path never moves, and
+`--uninstall` removes it.
+
 A LaunchDaemon (`hdwatcherd`) ships inside the app bundle and is registered with
 `SMAppService` from **Settings → Background**. macOS requires an administrator to
 approve it, and will only run it out of `/Applications`.
@@ -584,7 +599,7 @@ Tests/HDWatcherCoreTests/    unit + live filesystem integration tests
 swift test
 ```
 
-297 tests, runnable with `swift test` or through the Xcode scheme. Unit tests cover the vault, log round-trips, tamper detection, rule
+301 tests, runnable with `swift test` or through the Xcode scheme. Unit tests cover the vault, log round-trips, tamper detection, rule
 matching, burst and cooldown behaviour, hotspot rollup, filtering, the content
 container (capture, dedup, retention, restore, compaction, encryption at rest)
 the diff engine, and volume classification. Integration tests mount a real disk

@@ -886,6 +886,72 @@ struct BackgroundServiceSettings: View {
                 Spacer(minLength: 8)
             }
 
+            // The durable installation: one password, then it is launchd's
+            // job forever. Offered whenever it is not already in place, because
+            // every other route depends on an approval macOS can withdraw.
+            if !BackgroundService.Durable.isInstalled {
+                HStack(alignment: .top, spacing: 9) {
+                    Image(systemName: "lock.shield").foregroundStyle(.blue)
+                    VStack(alignment: .leading, spacing: 4) {
+                        Text("Install it permanently")
+                            .font(.callout.weight(.medium))
+                        Text("Registering through Login Items depends on an approval macOS drops when the app is rebuilt or the system is updated — which is why the daemon keeps needing repair. Installing it as a plain system service asks for your administrator password once and then starts it at every boot, whatever happens to the app.")
+                            .font(.caption).foregroundStyle(.secondary)
+                            .fixedSize(horizontal: false, vertical: true)
+                        HStack(spacing: 10) {
+                            Button {
+                                if let failure = model.installDaemonPermanently() {
+                                    message = failure
+                                    messageIsError = failure != "Cancelled."
+                                } else {
+                                    message = "Installed. The daemon now starts at boot on its own."
+                                    messageIsError = false
+                                }
+                            } label: {
+                                Label("Install Permanently…", systemImage: "lock.shield")
+                            }
+                            .buttonStyle(.borderedProminent)
+                            Button {
+                                NSPasteboard.general.clearContents()
+                                NSPasteboard.general.setString(BackgroundService.Durable.command,
+                                                               forType: .string)
+                                message = "Copied the command, if you would rather run it yourself."
+                                messageIsError = false
+                            } label: {
+                                Label("Copy Command", systemImage: "terminal")
+                            }
+                            .controlSize(.small)
+                        }
+                    }
+                }
+                .padding(10)
+                .background(.blue.opacity(0.08), in: RoundedRectangle(cornerRadius: 8))
+            } else if BackgroundService.Durable.isOutOfDate {
+                HStack(alignment: .top, spacing: 9) {
+                    Image(systemName: "arrow.triangle.2.circlepath").foregroundStyle(.orange)
+                    VStack(alignment: .leading, spacing: 4) {
+                        Text("A newer daemon is in this app than the one running")
+                            .font(.callout.weight(.medium))
+                        Text("The installed daemon keeps running the build it was installed from. Update it to match this app.")
+                            .font(.caption).foregroundStyle(.secondary)
+                        Button {
+                            if let failure = model.installDaemonPermanently() {
+                                message = failure
+                                messageIsError = failure != "Cancelled."
+                            } else {
+                                message = "Updated the installed daemon."
+                                messageIsError = false
+                            }
+                        } label: {
+                            Label("Update Daemon…", systemImage: "arrow.triangle.2.circlepath")
+                        }
+                        .controlSize(.small)
+                    }
+                }
+                .padding(10)
+                .background(.orange.opacity(0.08), in: RoundedRectangle(cornerRadius: 8))
+            }
+
             // What to do about it, when there is something to do.
             switch model.daemonVerdict.repair {
             case .openLoginItems:

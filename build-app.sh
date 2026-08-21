@@ -80,6 +80,9 @@ cp "$BINARY" "$MACOS_DIR/$APP_NAME"
 # Contents/Library/LaunchDaemons and launchd resolves BundleProgram relative to
 # the app.
 cp "$AGENT_BINARY" "$MACOS_DIR/hdwatcherd"
+# The permanent installer travels with the app so its path never moves.
+install -m 755 "$ROOT/Scripts/install-daemon.sh" "$RESOURCES_DIR/install-daemon.sh"
+
 cp "$ROOT/Resources/co.pixelworship.hdwatcher.daemon.plist" \
    "$CONTENTS/Library/LaunchDaemons/"
 cp "$ROOT/Resources/Info.plist" "$CONTENTS/Info.plist"
@@ -118,9 +121,31 @@ du -sh "$APP" | sed 's/^/    /'
 
 if [[ $INSTALL -eq 1 ]]; then
     echo "==> Installing to /Applications"
+    if pgrep -f "/Applications/$APP_NAME.app/Contents/MacOS/$APP_NAME" >/dev/null; then
+        echo "    note: $APP_NAME is running; quit it first or the copy may be refused" >&2
+    fi
     rm -rf "/Applications/$APP_NAME.app"
     cp -R "$APP" "/Applications/$APP_NAME.app"
-    echo "    installed"
+
+    # Verify rather than announce. A copy that silently did not land is exactly
+    # the kind of thing that has cost hours here: the app looks installed and
+    # runs yesterday's code.
+    installed_ok=1
+    for part in "Contents/MacOS/$APP_NAME" "Contents/MacOS/hdwatcherd" \
+                "Contents/Library/LaunchDaemons/co.pixelworship.hdwatcher.daemon.plist"; do
+        built_sum=$(shasum -a 256 "$APP/$part" 2>/dev/null | cut -d' ' -f1)
+        live_sum=$(shasum -a 256 "/Applications/$APP_NAME.app/$part" 2>/dev/null | cut -d' ' -f1)
+        if [[ -z "$live_sum" || "$built_sum" != "$live_sum" ]]; then
+            echo "    MISMATCH: $part did not install" >&2
+            installed_ok=0
+        fi
+    done
+    if [[ $installed_ok -eq 1 ]]; then
+        echo "    installed and verified: /Applications/$APP_NAME.app"
+    else
+        echo "    install did not complete" >&2
+        exit 1
+    fi
 fi
 
 cat <<EOF

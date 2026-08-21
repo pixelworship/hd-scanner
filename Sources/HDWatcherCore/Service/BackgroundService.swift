@@ -34,6 +34,79 @@ public enum BackgroundService {
         public var needsAttention: Bool { self == .requiresApproval || self == .notFound }
     }
 
+    // MARK: - The durable installation
+
+    /// A plain system LaunchDaemon, installed once with administrator rights.
+    ///
+    /// `SMAppService` keeps its registration in macOS's Background Task
+    /// Management database, tied to the app's code signature and to an approval
+    /// the user grants in Login Items. Rebuild the app and the signature
+    /// changes; install a system update and the approval can be withdrawn.
+    /// Either way the daemon quietly stops starting at boot — which is the one
+    /// thing it exists for, and it fails silently, which is worse.
+    ///
+    /// This is the older mechanism: binary in a stable root-owned location,
+    /// plist in `/Library/LaunchDaemons`, bootstrapped into the system domain.
+    /// It survives reboots, rebuilds and OS updates, and asks for a password
+    /// exactly once.
+    public enum Durable {
+        public static let plistPath = "/Library/LaunchDaemons/\(AgentPaths.serviceLabel).plist"
+        public static let binaryPath = "/usr/local/libexec/hdwatcherd"
+
+        /// The installer, shipped inside the app so its path never moves.
+        public static var scriptPath: String {
+            Bundle.main.bundleURL
+                .appendingPathComponent("Contents/Resources/install-daemon.sh").path
+        }
+
+        public static var isInstalled: Bool {
+            FileManager.default.fileExists(atPath: plistPath)
+                && FileManager.default.isExecutableFile(atPath: binaryPath)
+        }
+
+        /// True when the app bundle carries a different build of the daemon
+        /// than the one installed — after a rebuild, the installed copy is the
+        /// one still running.
+        public static var isOutOfDate: Bool {
+            guard isInstalled else { return false }
+            let bundled = Bundle.main.bundleURL
+                .appendingPathComponent("Contents/MacOS/hdwatcherd").path
+            guard let a = try? Data(contentsOf: URL(fileURLWithPath: bundled)),
+                  let b = try? Data(contentsOf: URL(fileURLWithPath: binaryPath))
+            else { return false }
+            return CryptoPrimitives.sha256(a) != CryptoPrimitives.sha256(b)
+        }
+
+        public static var command: String { "sudo \"\(scriptPath)\"" }
+
+        /// Runs the installer, prompting once for an administrator password
+        /// through the system dialog rather than sending the user to Terminal.
+        public static func install(uninstall: Bool = false) throws {
+            let script = scriptPath
+            guard FileManager.default.isExecutableFile(atPath: script) else {
+                throw CryptoError.secureEnclaveFailed(
+                    "The installer is missing from the app bundle. Rebuild with ./build-app.sh --install.")
+            }
+            let quoted = script.replacingOccurrences(of: "\"", with: "\\\"")
+            let arguments = uninstall ? " --uninstall" : ""
+            let source = "do shell script \"'\(quoted)'\(arguments)\" with administrator privileges"
+
+            var error: NSDictionary?
+            guard let apple = NSAppleScript(source: source) else {
+                throw CryptoError.secureEnclaveFailed("Could not build the installer command.")
+            }
+            apple.executeAndReturnError(&error)
+            if let error {
+                let message = error[NSAppleScript.errorMessage] as? String ?? "unknown error"
+                // -128 is the user cancelling the password prompt.
+                if (error[NSAppleScript.errorNumber] as? Int) == -128 {
+                    throw CryptoError.secureEnclaveFailed("Cancelled.")
+                }
+                throw CryptoError.secureEnclaveFailed(message)
+            }
+        }
+    }
+
     public static var isSupported: Bool {
         if #available(macOS 13.0, *) { return true }
         return false
@@ -53,6 +126,10 @@ public enum BackgroundService {
     public static var bundleLocation: String { Bundle.main.bundleURL.path }
 
     public static var state: State {
+        // A daemon installed the durable way is not registered with
+        // SMAppService at all, and asking it would report "not installed" about
+        // a daemon that is running right now.
+        if Durable.isInstalled { return .enabled }
         guard #available(macOS 13.0, *) else { return .unsupported }
         switch service.status {
         case .enabled:           return .enabled
@@ -83,6 +160,10 @@ public enum BackgroundService {
     /// service ... in domain for system". Unregistering first clears the stale
     /// bookkeeping so the fresh registration takes.
     public static func repair() throws {
+        // Never re-register through SMAppService while the durable daemon is in
+        // place: unregistering discards the approval and starts the whole
+        // approval dance again.
+        if Durable.isInstalled { return }
         guard #available(macOS 13.0, *) else {
             throw CryptoError.secureEnclaveFailed("background daemons need macOS 13 or later")
         }
