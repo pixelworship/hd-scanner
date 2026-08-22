@@ -41,6 +41,8 @@ fi
 
 uninstall() {
     echo "==> Removing $LABEL"
+    # Hand the job back to whatever the app registers.
+    launchctl enable "system/$SM_LABEL" 2>/dev/null || true
     launchctl bootout "system/$LABEL" 2>/dev/null || true
     launchctl disable "system/$LABEL" 2>/dev/null || true
     rm -f "$PLIST"
@@ -61,10 +63,12 @@ fi
 
 echo "==> Installing the recording daemon"
 
-# Only one recorder: stop whatever the app registered through SMAppService.
-# Its Background Task Management entry is the app's to remove; this just makes
-# sure the process is not running and holding the log open.
+# Only one recorder. Two of them interleave their hash chains into a log that
+# cannot be verified afterwards, so the SMAppService copy is stopped *and*
+# disabled: its Background Task Management entry is the app's to withdraw, but
+# a disabled label is one launchd will not start again on its own.
 launchctl bootout "system/$SM_LABEL" 2>/dev/null || true
+launchctl disable "system/$SM_LABEL" 2>/dev/null || true
 
 # The binary is copied out of the app bundle so that rebuilding, replacing or
 # even deleting the app does not stop the daemon from starting at boot.
@@ -123,6 +127,14 @@ fi
 launchctl kickstart -k "system/$LABEL" 2>/dev/null || true
 
 sleep 2
+
+# The old one must be gone, or two recorders write the same log.
+if pgrep -f "HDWatcher.app/Contents/MacOS/hdwatcherd" >/dev/null; then
+    echo "    stopping the copy still running from the app bundle"
+    launchctl bootout "system/$SM_LABEL" 2>/dev/null || true
+    pkill -f "HDWatcher.app/Contents/MacOS/hdwatcherd" 2>/dev/null || true
+fi
+
 if launchctl print "system/$LABEL" >/dev/null 2>&1; then
     pid=$(launchctl print "system/$LABEL" | awk '/^\tpid = /{print $3}')
     echo "    running as pid ${pid:-unknown}"

@@ -18,6 +18,8 @@ final class Agent {
     private var store: EventStore?
     private var status = AgentStatus(pid: getpid())
     private var configuration = AgentConfiguration()
+    private let recorderLock = RecorderLock()
+    private var lockWatch: Timer?
     private var configurationStamp: Date?
     private var ownerHome: String?
     private let trailGuard = AuditTrailGuard()
@@ -140,6 +142,16 @@ final class Agent {
             log("agent disabled in configuration; idling")
             return
         }
+        // Only one recorder may write the log. Two of them interleave their
+        // hash chains into something that cannot be verified afterwards, and
+        // during a changeover — the app's registered daemon and the permanently
+        // installed one — both are briefly alive.
+        guard recorderLock.acquire() else {
+            let holder = recorderLock.holder.map { " (pid \($0))" } ?? ""
+            log("another recorder is already writing the log\(holder); waiting for it to finish")
+            scheduleLockWatch()
+            return
+        }
 
         do {
             let store = try EventStore(writeOnlyRecipient: publicKey)
@@ -170,9 +182,31 @@ final class Agent {
         engine = nil
         store?.close()
         store = nil
+        // Let another recorder take over rather than leaving the log claimed by
+        // a process that is no longer writing to it.
+        recorderLock.release()
     }
 
     // MARK: - Configuration
+
+    /// Waits for the other recorder to let go, then takes over. A recorder
+    /// that simply exited would be restarted by launchd every ten seconds and
+    /// never take over at all.
+    private func scheduleLockWatch() {
+        guard lockWatch == nil else { return }
+        let timer = Timer(timeInterval: 15, repeats: true) { [weak self] _ in
+            guard let self, self.engine == nil else { return }
+            if self.recorderLock.acquire() {
+                self.recorderLock.release()   // startEngine takes it properly
+                self.log("the other recorder has gone; taking over")
+                self.lockWatch?.invalidate()
+                self.lockWatch = nil
+                self.startEngine()
+            }
+        }
+        RunLoop.current.add(timer, forMode: .common)
+        lockWatch = timer
+    }
 
     private func scheduleConfigurationWatch() {
         let timer = Timer(timeInterval: 5, repeats: true) { [weak self] _ in
