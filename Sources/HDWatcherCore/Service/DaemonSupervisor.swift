@@ -69,17 +69,21 @@ public struct DaemonSupervisor: Sendable {
         public let processAlive: Bool
         public let registeredAt: Date?
         public let repairAttempts: Int
+        /// Installed as a plain LaunchDaemon rather than through
+        /// SMAppService. Nothing about re-registering applies to it.
+        public let isDurable: Bool
         public let now: Date
 
         public init(state: BackgroundService.State, wanted: Bool, heartbeat: Date?,
                     processAlive: Bool, registeredAt: Date?, repairAttempts: Int = 0,
-                    now: Date = Date()) {
+                    isDurable: Bool = false, now: Date = Date()) {
             self.state = state
             self.wanted = wanted
             self.heartbeat = heartbeat
             self.processAlive = processAlive
             self.registeredAt = registeredAt
             self.repairAttempts = repairAttempts
+            self.isDurable = isDurable
             self.now = now
         }
     }
@@ -122,10 +126,20 @@ public struct DaemonSupervisor: Sendable {
             }
 
             let waited = input.registeredAt.map { input.now.timeIntervalSince($0) } ?? .greatestFiniteMagnitude
-            if waited < startupGrace {
+            if waited < startupGrace || (input.isDurable && waited < startupGrace * 2) {
                 return Verdict(health: .startingUp, repair: .wait,
                                summary: "Starting up",
                                detail: "The daemon has just been registered and should begin recording within a few seconds.")
+            }
+
+            // A daemon installed the durable way is launchd's to start, and
+            // re-registering is not a thing that can be done to it. Saying
+            // "registered but not running" about it would send the user back
+            // round a loop that does not apply.
+            if input.isDurable {
+                return Verdict(health: .droppedByLaunchd, repair: .askForHelp,
+                               summary: "Installed, but not recording",
+                               detail: "The service is installed at /Library/LaunchDaemons and launchd should be running it. Check what it says for itself: sudo launchctl print system/\(BackgroundService.Durable.label) — and its own log under /Library/Application Support.")
             }
 
             if input.repairAttempts >= maximumRepairAttempts {

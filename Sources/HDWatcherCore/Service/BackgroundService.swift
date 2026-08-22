@@ -1,4 +1,5 @@
 import Foundation
+import AppKit
 import ServiceManagement
 
 /// Registers and inspects the privileged recording daemon.
@@ -49,8 +50,21 @@ public enum BackgroundService {
     /// plist in `/Library/LaunchDaemons`, bootstrapped into the system domain.
     /// It survives reboots, rebuilds and OS updates, and asks for a password
     /// exactly once.
+    /// What went wrong installing the service, in the words of the thing that
+    /// refused. Every failure here used to arrive dressed as a Secure Enclave
+    /// error, which sent everyone looking in the wrong place.
+    public struct InstallError: LocalizedError {
+        public let message: String
+        public var errorDescription: String? { message }
+        public init(_ message: String) { self.message = message }
+    }
+
     public enum Durable {
-        public static let plistPath = "/Library/LaunchDaemons/\(AgentPaths.serviceLabel).plist"
+        /// Deliberately not the SMAppService label: Background Task Management
+        /// keeps its own claim on that one, and launchd refuses to bootstrap a
+        /// label BTM already owns.
+        public static let label = "co.pixelworship.hdwatcherd"
+        public static let plistPath = "/Library/LaunchDaemons/\(label).plist"
         public static let binaryPath = "/usr/local/libexec/hdwatcherd"
 
         /// The installer, shipped inside the app so its path never moves.
@@ -81,28 +95,55 @@ public enum BackgroundService {
 
         /// Runs the installer, prompting once for an administrator password
         /// through the system dialog rather than sending the user to Terminal.
+        ///
+        /// `osascript` is launched as a subprocess rather than run in-process:
+        /// its output — including whatever launchd said when it refused — is
+        /// then readable, which is the difference between a fix and another
+        /// round of guessing.
         public static func install(uninstall: Bool = false) throws {
             let script = scriptPath
             guard FileManager.default.isExecutableFile(atPath: script) else {
-                throw CryptoError.secureEnclaveFailed(
-                    "The installer is missing from the app bundle. Rebuild with ./build-app.sh --install.")
+                throw InstallError("The installer is missing from the app bundle. Rebuild with ./build-app.sh --install.")
             }
+
+            // Only one recorder. The SMAppService registration is the app's to
+            // withdraw, and leaving it in place would mean two daemons writing
+            // the same log.
+            if #available(macOS 13.0, *), service.status != .notRegistered {
+                try? service.unregister()
+            }
+
             let quoted = script.replacingOccurrences(of: "\"", with: "\\\"")
             let arguments = uninstall ? " --uninstall" : ""
             let source = "do shell script \"'\(quoted)'\(arguments)\" with administrator privileges"
 
-            var error: NSDictionary?
-            guard let apple = NSAppleScript(source: source) else {
-                throw CryptoError.secureEnclaveFailed("Could not build the installer command.")
+            let process = Process()
+            process.executableURL = URL(fileURLWithPath: "/usr/bin/osascript")
+            process.arguments = ["-e", source]
+            let output = Pipe()
+            let errors = Pipe()
+            process.standardOutput = output
+            process.standardError = errors
+
+            do { try process.run() } catch {
+                throw InstallError("Could not start the installer: \(error.localizedDescription)")
             }
-            apple.executeAndReturnError(&error)
-            if let error {
-                let message = error[NSAppleScript.errorMessage] as? String ?? "unknown error"
-                // -128 is the user cancelling the password prompt.
-                if (error[NSAppleScript.errorNumber] as? Int) == -128 {
-                    throw CryptoError.secureEnclaveFailed("Cancelled.")
+            let combined = (String(data: output.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8) ?? "")
+                + (String(data: errors.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8) ?? "")
+            process.waitUntilExit()
+
+            guard process.terminationStatus == 0 else {
+                if combined.contains("User canceled") || combined.contains("-128") {
+                    throw InstallError("Cancelled.")
                 }
-                throw CryptoError.secureEnclaveFailed(message)
+                let detail = combined.trimmingCharacters(in: .whitespacesAndNewlines)
+                throw InstallError(detail.isEmpty
+                                   ? "The installer exited with status \(process.terminationStatus)."
+                                   : detail)
+            }
+
+            guard uninstall || isInstalled else {
+                throw InstallError("The installer reported success but the service is not there:\n\(combined)")
             }
         }
     }
@@ -178,7 +219,7 @@ public enum BackgroundService {
         do {
             try service.register()
         } catch {
-            throw CryptoError.secureEnclaveFailed(explain(error))
+            throw InstallError(explain(error))
         }
     }
 
@@ -195,6 +236,15 @@ public enum BackgroundService {
         guard #available(macOS 13.0, *) else { return }
         try service.unregister()
         AgentStatus.clear()
+    }
+
+    /// Opens the Full Disk Access pane. The daemon runs from its own path once
+    /// installed permanently, so it needs a grant of its own — the app's does
+    /// not cover it.
+    public static func openFullDiskAccessSettings() {
+        guard let url = URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_AllFiles")
+        else { return }
+        NSWorkspace.shared.open(url)
     }
 
     /// Opens the Login Items pane, where macOS asks the user to approve the agent.

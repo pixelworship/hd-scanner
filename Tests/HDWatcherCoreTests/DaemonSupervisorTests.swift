@@ -95,3 +95,38 @@ final class DaemonSupervisorTests: XCTestCase {
         XCTAssertEqual(verdict.repair, .none)
     }
 }
+
+/// A permanently installed daemon is launchd's to start. Telling the user it is
+/// "registered but not running" and offering to re-register sends them back
+/// round a loop that does not apply to it.
+final class DurableDaemonVerdictTests: XCTestCase {
+
+    private func input(heartbeatAge: TimeInterval?, processAlive: Bool = false,
+                       registeredAgo: TimeInterval? = nil) -> DaemonSupervisor.Input {
+        DaemonSupervisor.Input(
+            state: .enabled, wanted: true,
+            heartbeat: heartbeatAge.map { Date(timeIntervalSinceNow: -$0) },
+            processAlive: processAlive,
+            registeredAt: registeredAgo.map { Date(timeIntervalSinceNow: -$0) },
+            isDurable: true)
+    }
+
+    func testARecentHeartbeatIsStillAllTheProofNeeded() {
+        XCTAssertEqual(DaemonSupervisor.assess(input(heartbeatAge: 3)).health, .recording)
+    }
+
+    func testItIsNeverAskedToReregister() {
+        let verdict = DaemonSupervisor.assess(input(heartbeatAge: 3_600, registeredAgo: 7_200))
+        XCTAssertEqual(verdict.repair, .askForHelp)
+        XCTAssertFalse(DaemonSupervisor.shouldRepairAutomatically(verdict))
+        XCTAssertTrue(verdict.detail.contains("launchctl print"),
+                      "the user needs the command that says what launchd thinks")
+    }
+
+    func testItIsGivenLongerToStart() {
+        // It boots before login and may be waiting on the disk; a freshly
+        // installed one is not a broken one.
+        XCTAssertEqual(DaemonSupervisor.assess(input(heartbeatAge: nil, registeredAgo: 60)).health,
+                       .startingUp)
+    }
+}

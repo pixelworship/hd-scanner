@@ -10,7 +10,10 @@
     <false/>
     <key>com.apple.security.files.user-selected.read-write</key>
     <true/>
+    <!-- The permanent daemon install asks for an administrator password
+         through the system dialog, which goes through AppleScript. Without
+         this the request is refused before the user ever sees a prompt. -->
     <key>com.apple.security.automation.apple-events</key>
-    <false/>
+    <true/>
 </dict>
 </plist>

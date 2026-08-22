@@ -20,7 +20,13 @@
 #
 set -euo pipefail
 
-LABEL="co.pixelworship.hdwatcher.daemon"
+# Deliberately *not* the label SMAppService uses. Background Task Management
+# keeps its own claim on that one, and launchd refuses to bootstrap a label the
+# BTM database already owns — which is why installing on top of a registered
+# service failed. A separate label sidesteps that entirely; the app unregisters
+# the SMAppService copy so only one recorder ever runs.
+LABEL="co.pixelworship.hdwatcherd"
+SM_LABEL="co.pixelworship.hdwatcher.daemon"
 PLIST="/Library/LaunchDaemons/$LABEL.plist"
 TARGET_DIR="/usr/local/libexec"
 TARGET="$TARGET_DIR/hdwatcherd"
@@ -36,6 +42,7 @@ fi
 uninstall() {
     echo "==> Removing $LABEL"
     launchctl bootout "system/$LABEL" 2>/dev/null || true
+    launchctl disable "system/$LABEL" 2>/dev/null || true
     rm -f "$PLIST"
     rm -f "$TARGET"
     echo "    removed. The audit log in /Library/Application Support is untouched."
@@ -53,6 +60,11 @@ if [[ ! -x "$SOURCE" ]]; then
 fi
 
 echo "==> Installing the recording daemon"
+
+# Only one recorder: stop whatever the app registered through SMAppService.
+# Its Background Task Management entry is the app's to remove; this just makes
+# sure the process is not running and holding the log open.
+launchctl bootout "system/$SM_LABEL" 2>/dev/null || true
 
 # The binary is copied out of the app bundle so that rebuilding, replacing or
 # even deleting the app does not stop the daemon from starting at boot.
@@ -98,7 +110,16 @@ echo "    plist:  $PLIST"
 # launchd refuses to load a service that is on the disabled list, which is where
 # a previous bootout with -w or an earlier failure can leave it.
 launchctl enable "system/$LABEL" 2>/dev/null || true
-launchctl bootstrap system "$PLIST"
+if ! bootstrap_output=$(launchctl bootstrap system "$PLIST" 2>&1); then
+    # Already loaded is not a failure; anything else is, and the real message
+    # from launchd is worth far more than a generic one.
+    if [[ "$bootstrap_output" == *"already"* || "$bootstrap_output" == *"37:"* ]]; then
+        echo "    already loaded; restarting it"
+    else
+        echo "launchctl bootstrap failed: $bootstrap_output" >&2
+        exit 1
+    fi
+fi
 launchctl kickstart -k "system/$LABEL" 2>/dev/null || true
 
 sleep 2
@@ -110,6 +131,9 @@ if launchctl print "system/$LABEL" >/dev/null 2>&1; then
     echo "Give it Full Disk Access so it can see the whole drive:"
     echo "  System Settings > Privacy & Security > Full Disk Access > + > $TARGET"
     echo "  (press Cmd-Shift-G in the file picker and paste that path)"
+    echo
+    echo "Label: $LABEL"
+    echo "Check it any time with: sudo launchctl print system/$LABEL | head -5"
 else
     echo "The service did not start. Check the daemon's own log:" >&2
     echo "  sudo tail -20 '/Library/Application Support/co.pixelworship.hdwatcher/agent.log'" >&2

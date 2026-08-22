@@ -8,13 +8,29 @@ import XCTest
 /// at boot. These cover the durable route that does not depend on either.
 final class DurableInstallTests: XCTestCase {
 
+    func testItUsesADifferentLabelFromTheOneBTMOwns() {
+        // Background Task Management keeps a claim on the SMAppService label,
+        // and launchd refuses to bootstrap a label BTM already owns — which is
+        // exactly how the first attempt at a permanent install failed.
+        XCTAssertNotEqual(BackgroundService.Durable.label, AgentPaths.serviceLabel)
+        XCTAssertTrue(BackgroundService.Durable.plistPath.contains(BackgroundService.Durable.label))
+    }
+
+    func testInstallFailuresSayWhatActuallyWentWrong() {
+        // Every failure used to arrive dressed as a Secure Enclave error, which
+        // sent everyone looking in the wrong place.
+        let error = BackgroundService.InstallError("launchctl bootstrap failed: Input/output error")
+        XCTAssertEqual(error.errorDescription, "launchctl bootstrap failed: Input/output error")
+        XCTAssertFalse(error.localizedDescription.lowercased().contains("enclave"))
+    }
+
     func testItLivesSomewhereRebuildingTheAppCannotDisturb() {
         // The binary is copied out of the bundle deliberately: replacing or
         // deleting the app must not stop the daemon starting at boot.
         XCTAssertEqual(BackgroundService.Durable.binaryPath, "/usr/local/libexec/hdwatcherd")
         XCTAssertFalse(BackgroundService.Durable.binaryPath.hasPrefix("/Applications"))
         XCTAssertEqual(BackgroundService.Durable.plistPath,
-                       "/Library/LaunchDaemons/co.pixelworship.hdwatcher.daemon.plist")
+                       "/Library/LaunchDaemons/co.pixelworship.hdwatcherd.plist")
     }
 
     func testTheCommandIsOneTheUserCanActuallyRun() {
@@ -38,6 +54,10 @@ final class DurableInstallTests: XCTestCase {
         XCTAssertTrue(script.contains("launchctl enable"),
                       "a service left on the disabled list will not load")
         XCTAssertTrue(script.contains("--uninstall"), "it has to be removable too")
+        XCTAssertTrue(script.contains("co.pixelworship.hdwatcherd"),
+                      "the durable service needs its own label")
+        XCTAssertTrue(script.contains("bootout \"system/$SM_LABEL\""),
+                      "the SMAppService copy has to be stopped so only one recorder runs")
     }
 
     func testAnAbsentInstallationIsReportedAsAbsent() {

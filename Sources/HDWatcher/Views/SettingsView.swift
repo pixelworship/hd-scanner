@@ -904,7 +904,7 @@ struct BackgroundServiceSettings: View {
                                     message = failure
                                     messageIsError = failure != "Cancelled."
                                 } else {
-                                    message = "Installed. The daemon now starts at boot on its own."
+                                    message = "Installed. It starts at boot on its own now — one thing left: give /usr/local/libexec/hdwatcherd Full Disk Access."
                                     messageIsError = false
                                 }
                             } label: {
@@ -926,7 +926,42 @@ struct BackgroundServiceSettings: View {
                 }
                 .padding(10)
                 .background(.blue.opacity(0.08), in: RoundedRectangle(cornerRadius: 8))
-            } else if BackgroundService.Durable.isOutOfDate {
+            } else if BackgroundService.Durable.isInstalled {
+                HStack(alignment: .top, spacing: 9) {
+                    Image(systemName: "checkmark.seal.fill").foregroundStyle(.green)
+                    VStack(alignment: .leading, spacing: 4) {
+                        Text("Installed permanently")
+                            .font(.callout.weight(.medium))
+                        Text("Running as \(BackgroundService.Durable.label) from /usr/local/libexec, started by launchd at boot. It does not depend on this app, on Login Items, or on the app's signature — rebuilding or updating will not disturb it.")
+                            .font(.caption).foregroundStyle(.secondary)
+                            .fixedSize(horizontal: false, vertical: true)
+                        HStack(spacing: 10) {
+                            Button {
+                                BackgroundService.openFullDiskAccessSettings()
+                            } label: {
+                                Label("Full Disk Access for the daemon", systemImage: "externaldrive.badge.person.crop")
+                            }
+                            .help("Add /usr/local/libexec/hdwatcherd — the app's own grant does not cover it")
+                            Button(role: .destructive) {
+                                if let failure = model.installDaemonPermanently(uninstall: true) {
+                                    message = failure
+                                    messageIsError = failure != "Cancelled."
+                                } else {
+                                    message = "Removed the permanent installation. The audit log is untouched."
+                                    messageIsError = false
+                                }
+                            } label: {
+                                Label("Remove", systemImage: "trash")
+                            }
+                        }
+                        .controlSize(.small)
+                    }
+                }
+                .padding(10)
+                .background(.green.opacity(0.08), in: RoundedRectangle(cornerRadius: 8))
+            }
+
+            if BackgroundService.Durable.isOutOfDate {
                 HStack(alignment: .top, spacing: 9) {
                     Image(systemName: "arrow.triangle.2.circlepath").foregroundStyle(.orange)
                     VStack(alignment: .leading, spacing: 4) {

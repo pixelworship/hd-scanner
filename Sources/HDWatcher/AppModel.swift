@@ -367,7 +367,8 @@ final class AppModel {
             heartbeat: agentStatus?.heartbeat,
             processAlive: agentStatus.map { AgentStatus.processExists($0.pid) } ?? false,
             registeredAt: daemonRegisteredAt,
-            repairAttempts: daemonRepairAttempts))
+            repairAttempts: daemonRepairAttempts,
+            isDurable: BackgroundService.Durable.isInstalled))
         daemonVerdict = verdict
 
         if verdict.health == .recording { daemonRepairAttempts = 0 }
