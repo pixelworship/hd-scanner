@@ -54,6 +54,13 @@ final class DurableInstallTests: XCTestCase {
         XCTAssertTrue(script.contains("launchctl enable"),
                       "a service left on the disabled list will not load")
         XCTAssertTrue(script.contains("--uninstall"), "it has to be removable too")
+        // `launchctl bootout` returns before launchd has finished unloading,
+        // and bootstrapping into that gap fails with "Bootstrap failed: 5:
+        // Input/output error" — which is what an update looked like.
+        XCTAssertTrue(script.contains("wait_until_gone"),
+                      "installing over a running service has to wait for it to unload")
+        XCTAssertTrue(script.contains("already loaded"),
+                      "a label launchd already has is an update, not a failure")
         XCTAssertTrue(script.contains("co.pixelworship.hdwatcherd"),
                       "the durable service needs its own label")
         XCTAssertTrue(script.contains("bootout \"system/$SM_LABEL\""),

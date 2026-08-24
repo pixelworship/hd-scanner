@@ -39,6 +39,22 @@ if [[ $EUID -ne 0 ]]; then
     exit 1
 fi
 
+# `launchctl bootout` returns before launchd has finished unloading the
+# service, and bootstrapping into that gap fails with "Bootstrap failed: 5:
+# Input/output error" — which reads like a broken plist and is nothing of the
+# sort. Wait for the label to actually disappear.
+wait_until_gone() {
+    local attempts=0
+    while launchctl print "system/$LABEL" >/dev/null 2>&1; do
+        attempts=$((attempts + 1))
+        if [[ $attempts -gt 50 ]]; then
+            return 1
+        fi
+        sleep 0.2
+    done
+    return 0
+}
+
 uninstall() {
     echo "==> Removing $LABEL"
     # Hand the job back to whatever the app registers.
@@ -73,8 +89,16 @@ launchctl disable "system/$SM_LABEL" 2>/dev/null || true
 # The binary is copied out of the app bundle so that rebuilding, replacing or
 # even deleting the app does not stop the daemon from starting at boot.
 install -d -o root -g wheel -m 755 "$TARGET_DIR"
-# Stop the running copy before replacing the file it is executing.
-launchctl bootout "system/$LABEL" 2>/dev/null || true
+# Stop the running copy before replacing the file it is executing, and wait
+# for launchd to let go of the label.
+if launchctl print "system/$LABEL" >/dev/null 2>&1; then
+    echo "    stopping the running service"
+    launchctl bootout "system/$LABEL" 2>/dev/null || true
+    if ! wait_until_gone; then
+        echo "launchd is still holding $LABEL after ten seconds; try again in a moment" >&2
+        exit 1
+    fi
+fi
 install -o root -g wheel -m 755 "$SOURCE" "$TARGET"
 echo "    binary: $TARGET"
 
@@ -115,12 +139,14 @@ echo "    plist:  $PLIST"
 # a previous bootout with -w or an earlier failure can leave it.
 launchctl enable "system/$LABEL" 2>/dev/null || true
 if ! bootstrap_output=$(launchctl bootstrap system "$PLIST" 2>&1); then
-    # Already loaded is not a failure; anything else is, and the real message
-    # from launchd is worth far more than a generic one.
-    if [[ "$bootstrap_output" == *"already"* || "$bootstrap_output" == *"37:"* ]]; then
-        echo "    already loaded; restarting it"
+    # launchd says "5: Input/output error" for a label it already has, the same
+    # as for several other conditions. Asking whether the service is there
+    # afterwards is the only way to tell an update from a real failure.
+    if launchctl print "system/$LABEL" >/dev/null 2>&1; then
+        echo "    already loaded; restarting it with the new binary"
     else
         echo "launchctl bootstrap failed: $bootstrap_output" >&2
+        echo "The plist is at $PLIST and the binary at $TARGET; both must be root-owned." >&2
         exit 1
     fi
 fi
