@@ -94,10 +94,7 @@ public final class FileAccessMonitor: @unchecked Sendable {
     ].map { GlobPattern($0) }
 
     private let configuration: Configuration
-    /// Roots as the kernel spells them. `/var` and `/tmp` are symlinks into
-    /// `/private`, and open descriptors are always reported the long way — so a
-    /// root taken from `NSTemporaryDirectory()` would never match anything.
-    private let canonicalRoots: [String]
+    private let filter: ReadFilter
     private let mutex = NSLock()
     private var open: [String: Access] = [:]           // key: path|pid
     private var timer: DispatchSourceTimer?
@@ -118,7 +115,8 @@ public final class FileAccessMonitor: @unchecked Sendable {
 
     public init(configuration: Configuration = Configuration()) {
         self.configuration = configuration
-        self.canonicalRoots = configuration.roots.map { AppPaths.canonicalPath($0) }
+        self.filter = ReadFilter(roots: configuration.roots,
+                                 excludePatterns: configuration.excludePatterns)
     }
 
     public func start() {
@@ -184,10 +182,6 @@ public final class FileAccessMonitor: @unchecked Sendable {
 
     /// Files currently held open, across every process the kernel will tell us
     /// about. Root sees everything; a user process sees its own.
-    private func underRoot(_ path: String) -> Bool {
-        canonicalRoots.contains { path == $0 || path.hasPrefix($0 + "/") }
-    }
-
     private func currentlyOpen() -> [(path: String, pid: Int32, name: String)] {
         var results: [(String, Int32, String)] = []
         let count = proc_listpids(UInt32(PROC_ALL_PIDS), 0, nil, 0)
@@ -230,19 +224,6 @@ public final class FileAccessMonitor: @unchecked Sendable {
     public private(set) var unfinishedPasses = 0
 
     func isInteresting(_ path: String) -> Bool {
-        guard !path.isEmpty, path.hasPrefix("/") else { return false }
-        // Paths from the kernel are already canonical; one handed in by a
-        // caller may not be, and `/var` is a symlink into `/private`.
-        var candidate = path
-        if !underRoot(candidate) {
-            candidate = AppPaths.canonicalPath(path)
-            guard underRoot(candidate) else { return false }
-        }
-        let path = candidate
-        if configuration.excludePatterns.contains(where: { $0.matches(path) }) { return false }
-        // Directories are held open by everything that walks them.
-        var info = stat()
-        guard lstat(path, &info) == 0, (info.st_mode & S_IFMT) == S_IFREG else { return false }
-        return true
+        filter.admits(path)
     }
 }

@@ -112,6 +112,20 @@ final class AppModel {
 
     var readGroups: [ReadGroup] = []
     var isLoadingReads = false
+
+    /// How reads are being caught, as reported by whichever recorder is live.
+    /// The daemon (root) uses the kernel audit pipe and catches everything; the
+    /// app alone can only sample.
+    enum ReadCoverage { case off, kernel, sampling }
+    var readCoverage: ReadCoverage {
+        let value = isViewerMode ? (agentStatus?.readCapture ?? "off")
+                                 : (engine?.currentStatus.readCapture ?? "off")
+        switch value {
+        case "kernel":   return .kernel
+        case "sampling": return .sampling
+        default:         return settings.trackFileReads ? .sampling : .off
+        }
+    }
     private var readsTask: Task<Void, Never>?
     private var readsGate = ReadsRefreshGate()
     /// The search the visible list was built for; live merges honour it.

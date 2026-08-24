@@ -42,6 +42,7 @@ struct ReadsView: View {
                         ? "As files are opened, the process holding them is recorded here. Files opened and closed between two samples are missed — the sampling interval is in Settings → Monitoring."
                         : nil)
             } else {
+                coverageBanner
                 HSplitView {
                     fileList.frame(minWidth: 300, idealWidth: 380)
                     detail.frame(minWidth: 420)
@@ -56,6 +57,29 @@ struct ReadsView: View {
                 guard !Task.isCancelled, !isPaused else { break }
                 reload()
             }
+        }
+    }
+
+    /// States plainly which mechanism is catching reads — the difference
+    /// between "every open, including a Terminal cat" and "only files held open
+    /// long enough to be sampled" is not a detail to hide.
+    @ViewBuilder
+    private var coverageBanner: some View {
+        switch model.readCoverage {
+        case .kernel:
+            EmptyView()   // complete coverage; nothing to caveat
+        case .sampling:
+            HStack(spacing: 8) {
+                Image(systemName: "exclamationmark.triangle.fill").foregroundStyle(.orange)
+                Text("Sampling open files every few seconds — a file opened and closed quickly (a Terminal `cat`, a Quick Look) can be missed. Kernel-level capture that catches every read needs the background daemon, which runs as root.")
+                    .font(.caption).foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+                Spacer(minLength: 0)
+            }
+            .padding(.horizontal, 14).padding(.vertical, 7)
+            .background(.orange.opacity(0.08))
+        case .off:
+            EmptyView()
         }
     }
 
@@ -77,6 +101,13 @@ struct ReadsView: View {
 
             Spacer()
 
+            if model.readCoverage == .kernel {
+                Label("Kernel capture", systemImage: "bolt.shield")
+                    .font(.caption2.weight(.medium))
+                    .padding(.horizontal, 6).padding(.vertical, 2)
+                    .background(.green.opacity(0.15), in: Capsule())
+                    .help("Every open() is caught from the audit trail, including reads too brief to sample")
+            }
             Text("\(Format.count(groups.count)) file\(groups.count == 1 ? "" : "s") · \(Format.count(groups.reduce(0) { $0 + $1.events.count })) reads")
                 .font(.caption).foregroundStyle(.secondary)
 

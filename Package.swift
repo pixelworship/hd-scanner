@@ -11,9 +11,16 @@ let package = Package(
     ],
     targets: [
         .target(
+            name: "CBSM",
+            cSettings: [.unsafeFlags(["-Wno-deprecated-declarations"])],
+            linkerSettings: [.linkedLibrary("bsm")]
+        ),
+        .target(
             name: "HDWatcherCore",
+            dependencies: ["CBSM"],
             swiftSettings: [.swiftLanguageMode(.v5)],
             linkerSettings: [
+                .linkedLibrary("bsm"),
                 .linkedFramework("CoreServices"),
                 .linkedFramework("DiskArbitration"),
                 .linkedFramework("LocalAuthentication"),

@@ -64,6 +64,9 @@ public struct AgentStatus: Codable, Sendable {
     public var version: String
     public var runningAsRoot: Bool
     public var logDirectory: String
+    /// How the daemon is catching reads: "kernel" (audit pipe, catches
+    /// everything), "sampling" (misses sub-interval reads), or "off".
+    public var readCapture: String
 
     public init(pid: Int32 = 0, startedAt: Date = Date(), heartbeat: Date = Date(),
                 eventsRecorded: UInt64 = 0, eventsFiltered: UInt64 = 0,
@@ -71,7 +74,7 @@ public struct AgentStatus: Codable, Sendable {
                 alertsRaised: Int = 0, watchedPaths: [String] = [],
                 isMonitoring: Bool = false, lastError: String? = nil,
                 version: String = "1.0", runningAsRoot: Bool = false,
-                logDirectory: String = "") {
+                logDirectory: String = "", readCapture: String = "off") {
         self.pid = pid
         self.startedAt = startedAt
         self.heartbeat = heartbeat
@@ -86,6 +89,7 @@ public struct AgentStatus: Codable, Sendable {
         self.version = version
         self.runningAsRoot = runningAsRoot
         self.logDirectory = logDirectory
+        self.readCapture = readCapture
     }
 
     // Lenient so a status file written by an older build still parses.
@@ -105,6 +109,7 @@ public struct AgentStatus: Codable, Sendable {
         version = try c.decodeIfPresent(String.self, forKey: .version) ?? "1.0"
         runningAsRoot = try c.decodeIfPresent(Bool.self, forKey: .runningAsRoot) ?? false
         logDirectory = try c.decodeIfPresent(String.self, forKey: .logDirectory) ?? ""
+        readCapture = try c.decodeIfPresent(String.self, forKey: .readCapture) ?? "off"
     }
 
     /// The agent writes a heartbeat every few seconds; a stale one means it

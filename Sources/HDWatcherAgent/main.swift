@@ -166,6 +166,11 @@ final class Agent {
 
             if engine.start() {
                 log("watching \(engine.currentStatus.watchedPaths.count) path(s)")
+                switch engine.currentStatus.readCapture {
+                case "kernel":   log("read tracking: kernel audit pipe (catches every open)")
+                case "sampling": log("read tracking: descriptor sampling (kernel pipe unavailable)")
+                default:         break
+                }
             } else {
                 log("failed to start the filesystem monitor")
                 mutex.lock(); status.lastError = "Could not start the filesystem monitor."; mutex.unlock()
@@ -320,6 +325,7 @@ final class Agent {
             snapshot.alertsRaised = engineStatus.alertsRaised
             snapshot.watchedPaths = engineStatus.watchedPaths
             snapshot.isMonitoring = engineStatus.isMonitoring
+            snapshot.readCapture = engineStatus.readCapture
         } else {
             snapshot.isMonitoring = false
         }

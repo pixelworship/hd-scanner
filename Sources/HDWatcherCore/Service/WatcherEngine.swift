@@ -20,12 +20,22 @@ public final class WatcherEngine: @unchecked Sendable {
         public var startedAt: Date?
         public var lastEventAt: Date?
         public var pendingWrites: Int = 0
+        public var readCapture: String = "off"
         public init() {}
     }
 
     // Components
     public let registry = VolumeRegistry()
     private var readMonitor: FileAccessMonitor?
+    private var auditReadMonitor: AuditReadMonitor?
+
+    /// How reads are being caught right now, for honest reporting in the UI.
+    public enum ReadCapture: String, Sendable {
+        case off             // not tracking
+        case kernel          // audit pipe: catches every open, including a cat
+        case sampling        // descriptor sampling: misses sub-interval reads
+    }
+    public private(set) var readCapture: ReadCapture = .off
     public let hotspots: HotspotTracker
     public let stats = ActivityStats()
     public let notifier = Notifier()
@@ -330,33 +340,54 @@ public final class WatcherEngine: @unchecked Sendable {
     private func startReadTracking() {
         mutex.lock()
         let wanted = settings.trackFileReads
-        var configuration = FileAccessMonitor.Configuration()
-        configuration.interval = max(0.5, settings.readSampleSeconds)
-        configuration.roots = settings.readRoots
-        configuration.excludePatterns = settings.readExcludePatterns
+        let roots = settings.readRoots
+        let excludes = settings.readExcludePatterns
+        let interval = max(0.5, settings.readSampleSeconds)
         mutex.unlock()
-        guard wanted else { return }
+        guard wanted else { readCapture = .off; return }
 
+        // The audit pipe is strictly better than sampling — it catches every
+        // open, not just the ones held long enough to be sampled — but it needs
+        // root, so it only starts inside the daemon. When it starts, sampling
+        // is not run at all: it would only duplicate, at real CPU cost.
+        let audit = AuditReadMonitor(configuration: .init(roots: roots, excludePatterns: excludes))
+        audit.onRead = { [weak self] read in
+            self?.recordRead(path: read.path, pid: read.pid, at: read.at)
+        }
+        if case .started = audit.start() {
+            auditReadMonitor = audit
+            readCapture = .kernel
+            return
+        }
+
+        // No kernel tap (running unprivileged): fall back to sampling.
+        var configuration = FileAccessMonitor.Configuration()
+        configuration.interval = interval
+        configuration.roots = roots
+        configuration.excludePatterns = excludes
         let watcher = FileAccessMonitor(configuration: configuration)
-        // Recorded when the file is *opened*, not when it is closed. Waiting
-        // for the close would mean a process that holds a document open all
-        // afternoon never appears in the log at all, and the fact worth
-        // recording — this process opened this file at this time — is already
-        // true the moment it happens.
+        // Recorded when the file is *opened*, not when it is closed. Waiting for
+        // the close would mean a process that holds a document open all
+        // afternoon never appears at all, and the fact worth recording — this
+        // process opened this file at this time — is already true at the open.
         watcher.onAccessStarted = { [weak self] access in
-            self?.recordRead(access)
+            self?.recordRead(path: access.path, pid: access.pid, at: access.openedAt)
         }
         watcher.start()
         readMonitor = watcher
+        readCapture = .sampling
     }
 
-    private func recordRead(_ access: FileAccessMonitor.Access) {
-        var event = FileEvent(timestamp: access.openedAt, kind: .read, path: access.path)
-        event.volumeID = registry.volume(for: access.path)?.id
+    private func recordRead(path: String, pid: Int32, at time: Date) {
+        var event = FileEvent(timestamp: time, kind: .read, path: path)
+        event.volumeID = registry.volume(for: path)?.id
         var info = stat()
-        if lstat(access.path, &info) == 0 { event.size = Int64(info.st_size) }
-        // The process holding the descriptor is not a guess — it is the answer.
-        event.attribution = processAuditor.describe(pid: access.pid, evidence: .holdsFileOpen)
+        if lstat(path, &info) == 0 { event.size = Int64(info.st_size) }
+        // Attribution by evidence: this pid held the file open. A short-lived
+        // reader (a `cat` already gone by the time the record arrives) leaves
+        // describe() with nothing to find — the pid and the read are still
+        // recorded, only the signing identity is lost, which is inherent.
+        event.attribution = processAuditor.describe(pid: pid, evidence: .holdsFileOpen)
         store.record(event)
         hotspots.record([event])
         // Through the same pipe as every other event, so the Reads list learns
@@ -425,6 +456,9 @@ public final class WatcherEngine: @unchecked Sendable {
         sentinel.stop()
         readMonitor?.stop()
         readMonitor = nil
+        auditReadMonitor?.stop()
+        auditReadMonitor = nil
+        readCapture = .off
         maintenanceTimer?.cancel()
         maintenanceTimer = nil
         store.flush()
@@ -438,10 +472,12 @@ public final class WatcherEngine: @unchecked Sendable {
     }
 
     public var currentStatus: Status {
+        // (readCapture is folded in below)
         mutex.lock()
         var snapshot = status
         mutex.unlock()
         snapshot.transfersDetected = detector.transfersDetected
+        snapshot.readCapture = readCapture.rawValue
         return snapshot
     }
 
@@ -462,9 +498,11 @@ public final class WatcherEngine: @unchecked Sendable {
         // Read tracking is expensive enough that turning it off has to take
         // effect immediately, without waiting for a restart.
         let trackingWanted = newSettings.trackFileReads
-        if trackingWanted != (readMonitor != nil) {
-            readMonitor?.stop()
-            readMonitor = nil
+        let trackingRunning = readMonitor != nil || auditReadMonitor != nil
+        if trackingWanted != trackingRunning {
+            readMonitor?.stop(); readMonitor = nil
+            auditReadMonitor?.stop(); auditReadMonitor = nil
+            readCapture = .off
             if trackingWanted { startReadTracking() }
         }
         if let contentVault {

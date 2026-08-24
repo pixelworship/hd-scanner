@@ -302,13 +302,26 @@ copying a document to a USB stick leaves no trace on the source side. The Reads
 tab answers the question a change log cannot: which files were opened, and by
 what.
 
-It works by sampling the kernel's list of open file descriptors. What that
-catches is anything held open when a sample runs, with the process holding it —
-attribution here is evidence rather than inference, and carries the signing
-identity and team like every other actor in the app. What it misses is a file
-opened and closed entirely between two samples. Endpoint Security would see
-every open exactly, and needs an entitlement Apple grants by application; the
-seam for it is the same `FileAccessMonitor` interface.
+It works at two levels, best-available first:
+
+- **Kernel audit pipe** (the daemon, as root). `/dev/auditpipe` with the `fr`
+  file-read class delivers every `open()`-for-read on the system as it happens —
+  including a file opened and closed in under a millisecond, like `cat
+  image.png` in Terminal, which sampling can never catch. Records are parsed by
+  Apple's own libbsm through a small C shim (`CBSM`), the same code `praudit`
+  uses. This is what "complete" means, and the Reads tab shows a **Kernel
+  capture** badge when it is live.
+- **Descriptor sampling** (the app, unprivileged fallback). Samples the kernel's
+  list of open files; catches anything held open when a sample runs, misses the
+  brief reads. The tab shows an orange banner saying so, so the coverage is
+  never overstated.
+
+Attribution is evidence, not inference — the process that opened the file,
+carrying its signing identity and team. A reader already gone by the time the
+record arrives (that millisecond `cat`) leaves the pid and the read recorded
+with the signature lost, which is inherent. **Endpoint Security** would add
+per-open authorization on top; it needs an entitlement Apple grants by
+application, and slots in behind the same interface.
 
 Defaults matter more than the mechanism here. Watching the whole home produced
 **about eleven thousand opens a minute** on a real machine — app databases,
@@ -633,7 +646,7 @@ Tests/HDWatcherCoreTests/    unit + live filesystem integration tests
 swift test
 ```
 
-343 tests, runnable with `swift test` or through the Xcode scheme. Unit tests cover the vault, log round-trips, tamper detection, rule
+351 tests, runnable with `swift test` or through the Xcode scheme. Unit tests cover the vault, log round-trips, tamper detection, rule
 matching, burst and cooldown behaviour, hotspot rollup, filtering, the content
 container (capture, dedup, retention, restore, compaction, encryption at rest)
 the diff engine, and volume classification. Integration tests mount a real disk
