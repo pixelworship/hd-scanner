@@ -318,3 +318,41 @@ final class ProcessDescriptionCacheTests: XCTestCase {
         XCTAssertTrue(result.blockedByPrivileges)
     }
 }
+
+/// Media libraries are a bundle wrapped around a database that their own
+/// daemons read all day. Reporting those as reads buries the documents someone
+/// actually opened — this was the whole content of the first real run.
+final class ReadNoiseTests: XCTestCase {
+
+    private func watcher() -> FileAccessMonitor {
+        var configuration = FileAccessMonitor.Configuration()
+        configuration.roots = ["/"]
+        return FileAccessMonitor(configuration: configuration)
+    }
+
+    func testPhotoAndMusicLibrariesAreNotReads() {
+        let home = NSHomeDirectory()
+        XCTAssertFalse(watcher().isInteresting("\(home)/Pictures/Photos Library.photoslibrary/database/Photos.sqlite"))
+        XCTAssertFalse(watcher().isInteresting("\(home)/Music/Music Library.musiclibrary/Library.musicdb"))
+        XCTAssertFalse(watcher().isInteresting("\(home)/Movies/Home.imovielibrary/Projects/x.mov"))
+    }
+
+    func testOrdinaryDocumentsStillCount() throws {
+        // A real file in a real document folder: the exclusions must not have
+        // swallowed the thing the feature exists for.
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("hdw-docs-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let file = directory.appendingPathComponent("contract.pdf")
+        try "x".write(to: file, atomically: true, encoding: .utf8)
+
+        var configuration = FileAccessMonitor.Configuration()
+        configuration.roots = [AppPaths.canonicalPath(directory.path)]
+        // Only the media-library patterns are under test here.
+        configuration.excludePatterns = FileAccessMonitor.defaultExclusions
+            .filter { !$0.pattern.contains("var/folders") }
+        let watcher = FileAccessMonitor(configuration: configuration)
+        XCTAssertTrue(watcher.isInteresting(AppPaths.canonicalPath(file.path)))
+    }
+}

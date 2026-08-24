@@ -299,6 +299,12 @@ final class Agent {
     }
 
     private func refreshStatus() {
+        // A recorder standing by — because another one holds the log — must not
+        // publish status. Both write the same file, and the standby's zeros
+        // overwrote the running one's counters: the app showed "0 events" and
+        // "not responding" about a daemon that was recording perfectly well.
+        guard recorderLock.isHeld || engine != nil else { return }
+
         mutex.lock()
         var snapshot = status
         snapshot.pid = getpid()

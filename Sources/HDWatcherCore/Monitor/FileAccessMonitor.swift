@@ -85,6 +85,12 @@ public final class FileAccessMonitor: @unchecked Sendable {
         "**/*.sock", "/dev/**", "/private/var/folders/**",
         // App plumbing rather than anyone's documents.
         "**/Library/**", "**/.git/**", "**/node_modules/**",
+        // Media libraries are a bundle around a database that their own
+        // daemons read constantly; the photos in them are not being opened by
+        // anyone.
+        "**/*.photoslibrary/**", "**/*.photolibrary/**", "**/*.musiclibrary/**",
+        "**/*.tvlibrary/**", "**/*.imovielibrary/**", "**/*.fcpbundle/**",
+        "**/*.logicx/**", "**/*.aplibrary/**",
     ].map { GlobPattern($0) }
 
     private let configuration: Configuration

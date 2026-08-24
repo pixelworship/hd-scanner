@@ -183,6 +183,10 @@ public enum BackgroundService {
 
     /// Installs and starts the daemon. macOS prompts for administrator approval.
     public static func install() throws {
+        // The permanently installed service already covers this, and
+        // registering here is what kept resurrecting a second recorder: the app
+        // re-arms background recording on launch, and BTM starts its copy.
+        if Durable.isInstalled { return }
         guard #available(macOS 13.0, *) else {
             throw CryptoError.secureEnclaveFailed("background daemons need macOS 13 or later")
         }
@@ -311,6 +315,16 @@ public enum BackgroundService {
                 return error.localizedDescription
             }
         }
+    }
+
+    /// Withdraws the SMAppService registration when the durable service has
+    /// taken over. Idempotent, and called on every refresh: Background Task
+    /// Management is persistent, and one stale registration is enough to have
+    /// two recorders fighting over the log again.
+    public static func withdrawRegistrationIfSuperseded() {
+        guard Durable.isInstalled, #available(macOS 13.0, *) else { return }
+        guard service.status != .notRegistered else { return }
+        try? service.unregister()
     }
 
     /// Removes a LaunchAgent left behind by an earlier version.

@@ -114,13 +114,20 @@ final class AppModel {
     var isLoadingReads = false
     private var readsTask: Task<Void, Never>?
     private var readsSignature: String?
+    private var lastReadsPass: Date?
 
     /// Rebuilds the list of files that were read. Reads are ordinary events in
     /// the same encrypted log, so this is a query rather than another store.
-    func refreshReads(search: String? = nil, limit: Int = 20_000, force: Bool = false) {
+    func refreshReads(search: String? = nil, limit: Int = 20_000, force: Bool = false,
+                      window: TimeInterval = 7 * 24 * 3_600) {
         guard let store else { return }
-        let signature = "\(store.totalEventCount)|\(search ?? "")"
-        guard force || signature != readsSignature else { return }
+        // Deliberately not keyed on the event count: it changes constantly, and
+        // keying on it meant every poll cancelled the query still running and
+        // started another, so the list never appeared at all.
+        let signature = search ?? ""
+        let recentlyDone = lastReadsPass.map { Date().timeIntervalSince($0) < 10 } ?? false
+        guard force || signature != readsSignature || !recentlyDone else { return }
+        guard readsTask == nil || force || signature != readsSignature else { return }
 
         readsTask?.cancel()
         if readGroups.isEmpty { isLoadingReads = true }
@@ -130,6 +137,9 @@ final class AppModel {
                 query.kinds = [.read]
                 query.limit = limit
                 query.newestFirst = true
+                // A permanent log holds years of history; scanning all of it to
+                // show what was read is neither wanted nor affordable.
+                query.start = Date().addingTimeInterval(-window)
                 if let search, !search.isEmpty { query.pathContains = search }
 
                 var byPath: [String: [FileEvent]] = [:]
@@ -142,6 +152,8 @@ final class AppModel {
             self.readGroups = groups
             self.isLoadingReads = false
             self.readsSignature = signature
+            self.lastReadsPass = Date()
+            self.readsTask = nil
         }
     }
 
@@ -416,6 +428,7 @@ final class AppModel {
     private var lastDaemonRepair: Date?
 
     func refreshBackgroundService() {
+        BackgroundService.withdrawRegistrationIfSuperseded()
         backgroundServiceState = BackgroundService.state
         agentStatus = BackgroundService.status(using: vault.currentKeys)
 
