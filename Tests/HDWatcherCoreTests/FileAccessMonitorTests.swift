@@ -445,3 +445,104 @@ final class ReadExclusionMigrationTests: XCTestCase {
         XCTAssertEqual(patterns.count, Set(patterns).count, "merging must not duplicate")
     }
 }
+
+/// A sampler that skips work must not invent facts about what it skipped.
+///
+/// A pass abandons processes two ways: the time budget expires, or a process
+/// holds more descriptors than it is willing to walk. Either way those files
+/// are absent from the pass — and treating absence as "closed" meant a file
+/// held open the whole time was reported closed, then reported *open again*
+/// with a fabricated timestamp. In a permanent audit log that is a recorded
+/// falsehood, which is worse than a gap.
+final class SkippedPassHonestyTests: XCTestCase {
+
+    private var directory: URL!
+
+    override func setUpWithError() throws {
+        let raw = FileManager.default.temporaryDirectory
+            .appendingPathComponent("hdw-skip-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: raw, withIntermediateDirectories: true)
+        directory = URL(fileURLWithPath: AppPaths.canonicalPath(raw.path))
+    }
+
+    override func tearDownWithError() throws {
+        try? FileManager.default.removeItem(at: directory)
+    }
+
+    func testAPassThatExaminedNothingClosesNothing() throws {
+        let file = directory.appendingPathComponent("held.txt")
+        try "still open".write(to: file, atomically: true, encoding: .utf8)
+
+        var configuration = FileAccessMonitor.Configuration()
+        configuration.roots = [directory.path]
+        configuration.excludePatterns = []
+        let watcher = FileAccessMonitor(configuration: configuration)
+        watcher.sample()                                   // prime
+
+        let reader = Process()
+        reader.executableURL = URL(fileURLWithPath: "/bin/sh")
+        reader.arguments = ["-c", "exec 3< '\(file.path)'; sleep 6"]
+        try reader.run()
+        defer { reader.terminate() }
+        Thread.sleep(forTimeInterval: 0.8)
+
+        XCTAssertTrue(watcher.sample().contains { $0.path == file.path },
+                      "the open must be seen before the skip can be tested")
+
+        var closed: [FileAccessMonitor.Access] = []
+        watcher.onAccessFinished = { closed.append($0) }
+
+        // A pass with no time to look at anything.
+        var starved = FileAccessMonitor.Configuration()
+        starved.roots = [directory.path]
+        starved.excludePatterns = []
+        starved.timeBudget = 0
+        let starvedWatcher = FileAccessMonitor(configuration: starved)
+        starvedWatcher.sample()
+        starvedWatcher.onAccessFinished = { closed.append($0) }
+        starvedWatcher.sample()
+
+        XCTAssertTrue(closed.isEmpty,
+                      "a pass that looked at nothing cannot know anything closed: \(closed.map(\.path))")
+    }
+
+    func testTheFileIsStillTrackedAfterASkippedPassRatherThanReopened() throws {
+        let file = directory.appendingPathComponent("continuous.txt")
+        try "held".write(to: file, atomically: true, encoding: .utf8)
+
+        var configuration = FileAccessMonitor.Configuration()
+        configuration.roots = [directory.path]
+        configuration.excludePatterns = []
+        let watcher = FileAccessMonitor(configuration: configuration)
+        watcher.sample()
+
+        let reader = Process()
+        reader.executableURL = URL(fileURLWithPath: "/bin/sh")
+        reader.arguments = ["-c", "exec 3< '\(file.path)'; sleep 8"]
+        try reader.run()
+        defer { reader.terminate() }
+        Thread.sleep(forTimeInterval: 0.8)
+
+        let first = watcher.sample().first { $0.path == file.path }
+        let openedAt = try XCTUnwrap(first?.openedAt, "the first open must be observed")
+
+        // Two more passes while the file stays open the entire time.
+        Thread.sleep(forTimeInterval: 0.5)
+        let second = watcher.sample()
+        Thread.sleep(forTimeInterval: 0.5)
+        let third = watcher.sample()
+
+        // It must never be announced as a *new* open: it never closed.
+        XCTAssertFalse(second.contains { $0.path == file.path },
+                       "a file that never closed must not be reported opened again")
+        XCTAssertFalse(third.contains { $0.path == file.path })
+
+        var closed: [FileAccessMonitor.Access] = []
+        watcher.onAccessFinished = { closed.append($0) }
+        watcher.stop()
+        let final = try XCTUnwrap(closed.first { $0.path == file.path })
+        XCTAssertEqual(final.openedAt, openedAt,
+                       "the recorded time of the open must be when it actually opened")
+        XCTAssertGreaterThanOrEqual(final.samples, 3, "it was seen throughout, not re-created")
+    }
+}

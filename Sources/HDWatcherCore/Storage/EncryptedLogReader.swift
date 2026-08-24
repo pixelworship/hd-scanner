@@ -279,6 +279,17 @@ public struct EncryptedLogReader: Sendable {
         // Verify one lineage at a time. Two writers sharing a directory (the app
         // and a background recorder) each start their own chain at index 1;
         // chaining across both would make every first block look altered.
+        // Only one segment per lineage can be receiving writes: the newest.
+        // The torn-write tolerance below must apply to that one alone —
+        // discovered segments all carry sealed: false, so tolerating a bad
+        // trailing block on any of them left the final block of every segment
+        // unverifiable, and rewriting just that block would pass unnoticed.
+        var newestIndexByLineage: [String: UInt32] = [:]
+        for record in manifest.segments {
+            let current = newestIndexByLineage[record.lineage] ?? 0
+            if record.segmentIndex >= current { newestIndexByLineage[record.lineage] = record.segmentIndex }
+        }
+
         var previousMACByLineage: [String: Data] = [:]
         // How an earlier build seeded a new segment: from whichever record was
         // appended last, regardless of lineage. Segments written by that build
@@ -311,6 +322,10 @@ public struct EncryptedLogReader: Sendable {
 
             // One pass over the segment from a given point in the chain. Run
             // more than once when that starting point is in doubt.
+            // A segment can only be mid-write if nothing has superseded it.
+            let couldBeActive = !record.sealed
+                && record.segmentIndex == (newestIndexByLineage[record.lineage] ?? record.segmentIndex)
+
             func pass(seed: Data, trustFirstBlock: Bool = false) -> (verified: Int, chain: Data, problem: String?) {
                 let headerData = data.prefix(LogFormat.headerSize(forVersion: head.version))
                 var chain = CryptoPrimitives.hmac(Data(headerData) + seed, key: integrityKey)
@@ -355,7 +370,7 @@ public struct EncryptedLogReader: Sendable {
                         // cry wolf every time the log is verified while
                         // recording continues.
                         let isTrailingBlock = blockEnd == data.count
-                        if !record.sealed && isTrailingBlock { break }
+                        if couldBeActive && isTrailingBlock { break }
                         problem = "MAC mismatch at block \(storedIndex) — contents were altered"
                         break
                     }
@@ -363,7 +378,7 @@ public struct EncryptedLogReader: Sendable {
                     var aad = head.segmentID
                     aad.appendLE(storedIndex)
                     if (try? CryptoPrimitives.open(sealed, key: logKey, aad: aad)) == nil {
-                        if !record.sealed && blockEnd == data.count { break }
+                        if couldBeActive && blockEnd == data.count { break }
                         problem = "block \(storedIndex) failed to decrypt"
                         break
                     }

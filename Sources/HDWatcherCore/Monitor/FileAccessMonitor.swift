@@ -150,7 +150,7 @@ public final class FileAccessMonitor: @unchecked Sendable {
     /// rather than waiting on a timer.
     @discardableResult
     public func sample(now: Date = Date()) -> [Access] {
-        let seen = currentlyOpen()
+        let (seen, notExamined) = currentlyOpen()
         var started: [Access] = []
         var finished: [Access] = []
 
@@ -176,9 +176,21 @@ public final class FileAccessMonitor: @unchecked Sendable {
                 }
             }
         }
-        // Whatever was open last time and is not open now has been closed.
-        finished = primed ? Array(open.values) : []
-        open = stillOpen
+        // Whatever was open last time, whose process we actually looked at,
+        // and which is not open now, has been closed. Files belonging to a
+        // process this pass skipped are carried forward untouched — we have no
+        // evidence either way, and inventing one is worse than waiting.
+        var carried: [String: Access] = [:]
+        var closed: [Access] = []
+        for (key, access) in open {
+            if notExamined.contains(access.pid) {
+                carried[key] = access
+            } else {
+                closed.append(access)
+            }
+        }
+        finished = primed ? closed : []
+        open = stillOpen.merging(carried) { current, _ in current }
         primed = true
         mutex.unlock()
 
@@ -189,28 +201,47 @@ public final class FileAccessMonitor: @unchecked Sendable {
 
     /// Files currently held open, across every process the kernel will tell us
     /// about. Root sees everything; a user process sees its own.
-    private func currentlyOpen() -> [(path: String, pid: Int32, name: String)] {
+    private func currentlyOpen() -> (entries: [(path: String, pid: Int32, name: String)],
+                                     skipped: Set<Int32>) {
         var results: [(String, Int32, String)] = []
         let count = proc_listpids(UInt32(PROC_ALL_PIDS), 0, nil, 0)
-        guard count > 0 else { return [] }
+        guard count > 0 else { return ([], []) }
         let capacity = Int(count) / MemoryLayout<pid_t>.size
         var pids = [pid_t](repeating: 0, count: capacity)
         let written = proc_listpids(UInt32(PROC_ALL_PIDS), 0, &pids, count)
-        guard written > 0 else { return [] }
+        guard written > 0 else { return ([], []) }
 
         let mine = ProcessInfo.processInfo.processIdentifier
         let deadline = Date().addingTimeInterval(configuration.timeBudget)
         var skipped = 0
+        // Processes this pass declined to walk. Their files are still open; we
+        // simply did not look. Treating "did not look" as "closed" is how a
+        // still-open file came to be reported closed and then re-reported as a
+        // brand-new open with a fabricated timestamp — a falsehood in a
+        // permanent audit log.
+        var notExamined = Set<Int32>()
 
         for pid in pids where pid > 0 && pid != mine {
             // Abandon the pass rather than let it overrun into the next one.
             if Date() > deadline {
                 skipped += 1
+                notExamined.insert(pid)
                 continue
             }
-            guard let paths = ProcessAuditor.openPaths(
-                pid: pid, limit: configuration.maximumDescriptorsPerProcess),
-                  !paths.isEmpty else { continue }
+            let paths: Set<String>
+            switch ProcessAuditor.probeOpenPaths(
+                pid: pid, limit: configuration.maximumDescriptorsPerProcess) {
+            case .paths(let found):
+                paths = found
+            case .tooManyDescriptors:
+                notExamined.insert(pid)
+                continue
+            case .unavailable:
+                // Looked, and there is nothing to see: gone, or beyond reach.
+                // Its files are genuinely no longer held by us.
+                continue
+            }
+            guard !paths.isEmpty else { continue }
             // Only look up the name for a process that actually holds something
             // interesting: it is another two syscalls per process otherwise.
             var name: String?
@@ -223,7 +254,7 @@ public final class FileAccessMonitor: @unchecked Sendable {
             }
         }
         if skipped > 0 { unfinishedPasses += 1 }
-        return results
+        return (results, notExamined)
     }
 
     /// How many passes ran out of time. Visible rather than silent: it means

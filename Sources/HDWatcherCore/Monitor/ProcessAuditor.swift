@@ -362,6 +362,25 @@ public final class ProcessAuditor: @unchecked Sendable {
 
     /// Paths this process currently has open. Returns nil when the kernel
     /// refuses, which is how root-owned processes present to us.
+    /// Why a process's open files could not be listed. The difference matters:
+    /// a process we *chose* not to walk still holds its files, while one the
+    /// kernel will not describe is gone or beyond our reach.
+    enum OpenPathsOutcome {
+        case paths(Set<String>)
+        /// Holds more descriptors than the caller was willing to walk.
+        case tooManyDescriptors
+        /// Gone, or invisible to this process.
+        case unavailable
+    }
+
+    static func probeOpenPaths(pid: Int32, limit: Int) -> OpenPathsOutcome {
+        let bufferSize = proc_pidinfo(pid, PROC_PIDLISTFDS, 0, nil, 0)
+        guard bufferSize > 0 else { return .unavailable }
+        if Int(bufferSize) / MemoryLayout<proc_fdinfo>.size > limit { return .tooManyDescriptors }
+        guard let paths = openPaths(pid: pid) else { return .unavailable }
+        return .paths(paths)
+    }
+
     static func openPaths(pid: Int32, limit: Int = .max) -> Set<String>? {
         let bufferSize = proc_pidinfo(pid, PROC_PIDLISTFDS, 0, nil, 0)
         guard bufferSize > 0 else { return nil }
