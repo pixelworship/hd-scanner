@@ -85,6 +85,13 @@ public final class FileAccessMonitor: @unchecked Sendable {
         "**/*.sock", "/dev/**", "/private/var/folders/**",
         // App plumbing rather than anyone's documents.
         "**/Library/**", "**/.git/**", "**/node_modules/**",
+        // Build output. A compiler reads thousands of object files a minute;
+        // with the kernel tap catching every one of them, a single build would
+        // otherwise be the entire contents of this tab.
+        "**/*.o", "**/*.o.tmp", "**/*.d", "**/*.swiftmodule", "**/*.swiftdoc",
+        "**/*.swiftsourceinfo", "**/*.dia", "**/*.cstemp", "**/*.bc",
+        "**/.build/**", "**/DerivedData/**", "**/*.build/**",
+        "**/*.xcodeproj/**", "**/Pods/**", "**/.venv/**", "**/__pycache__/**",
         // Media libraries are a bundle around a database that their own
         // daemons read constantly; the photos in them are not being opened by
         // anyone.

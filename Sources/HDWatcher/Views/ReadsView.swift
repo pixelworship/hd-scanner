@@ -97,7 +97,7 @@ struct ReadsView: View {
             }
             .padding(.horizontal, 8).padding(.vertical, 5)
             .background(.quaternary.opacity(0.4), in: RoundedRectangle(cornerRadius: 7))
-            .frame(maxWidth: 320)
+            .frame(minWidth: 160, maxWidth: 320)
 
             Spacer()
 
@@ -110,6 +110,7 @@ struct ReadsView: View {
             }
             Text("\(Format.count(groups.count)) file\(groups.count == 1 ? "" : "s") · \(Format.count(groups.reduce(0) { $0 + $1.events.count })) reads")
                 .font(.caption).foregroundStyle(.secondary)
+                .lineLimit(1).fixedSize()
 
             Toggle(isOn: Binding(get: { !isPaused }, set: { isPaused = !$0 })) {
                 Label(isPaused ? "Paused" : "Live",
@@ -122,6 +123,13 @@ struct ReadsView: View {
                 .disabled(!isPaused)
         }
         .padding(.horizontal, 14).padding(.vertical, 9)
+        // The header owns its height. Without this a long list could compress
+        // it until the search field and title collided, which is exactly what a
+        // build's worth of reads did to it.
+        .fixedSize(horizontal: false, vertical: true)
+        .frame(maxWidth: .infinity)
+        .background(.bar)
+        .zIndex(1)
     }
 
     private var fileList: some View {
@@ -150,6 +158,7 @@ struct ReadsView: View {
                     }
                 }
                 .padding(.vertical, 2)
+                .frame(height: 52)
                 .tag(group.path)
                 .help(group.path)
             }

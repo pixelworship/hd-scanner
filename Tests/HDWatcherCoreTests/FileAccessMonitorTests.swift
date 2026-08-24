@@ -356,3 +356,52 @@ final class ReadNoiseTests: XCTestCase {
         XCTAssertTrue(watcher.isInteresting(AppPaths.canonicalPath(file.path)))
     }
 }
+
+/// With the kernel tap catching every open, a single compile produces thousands
+/// of reads of object files and temporaries. Left in, one build is the entire
+/// contents of the Reads tab — which is what happened the first time this ran
+/// against a checkout on the Desktop.
+final class BuildArtefactNoiseTests: XCTestCase {
+
+    private func watcher() -> FileAccessMonitor {
+        var configuration = FileAccessMonitor.Configuration()
+        configuration.roots = ["/"]
+        return FileAccessMonitor(configuration: configuration)
+    }
+
+    func testCompilerOutputIsNotAReadWorthRecording() {
+        let home = NSHomeDirectory()
+        let noise = [
+            "\(home)/Desktop/project/.build/x/EventStore.swift-ba3ac9f6.o.tmp",
+            "\(home)/Desktop/project/.build/HDWatcherCore.build/AppPaths.swift.o",
+            "\(home)/Desktop/project/build/HDWatcher.build/MainView.swift.o",
+            "\(home)/Documents/app/DerivedData/Build/Products/Debug/thing.swiftmodule",
+            "\(home)/Desktop/proj/HDWatcher.cstemp",
+            "\(home)/Documents/site/node_modules/pkg/index.js",
+            "\(home)/Documents/py/__pycache__/mod.cpython-311.pyc",
+        ]
+        for path in noise {
+            XCTAssertFalse(watcher().isInteresting(path), "build noise leaked through: \(path)")
+        }
+    }
+
+    func testRealDocumentsSurviveTheseExclusions() throws {
+        // The exclusions must not have quietly swallowed ordinary work.
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("hdw-keep-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+
+        for name in ["contract.pdf", "payroll.csv", "photo.png", "notes.md", "build-app.sh"] {
+            let file = directory.appendingPathComponent(name)
+            try "x".write(to: file, atomically: true, encoding: .utf8)
+            var configuration = FileAccessMonitor.Configuration()
+            configuration.roots = [AppPaths.canonicalPath(directory.path)]
+            configuration.excludePatterns = FileAccessMonitor.defaultExclusions
+                .filter { !$0.pattern.contains("var/folders") }
+            let watcher = FileAccessMonitor(configuration: configuration)
+            XCTAssertTrue(watcher.isInteresting(AppPaths.canonicalPath(file.path)),
+                          "\(name) is a real file someone might read")
+        }
+    }
+}

@@ -130,6 +130,8 @@ final class AppModel {
     private var readsGate = ReadsRefreshGate()
     /// The search the visible list was built for; live merges honour it.
     private var currentReadsSearch = ""
+    private var pendingReads: [FileEvent] = []
+    private var readsMergeScheduled = false
 
 
     /// Rebuilds the list of files that were read. Reads are ordinary events in
@@ -195,13 +197,37 @@ final class AppModel {
                     || event.path.localizedCaseInsensitiveContains(currentReadsSearch))
         }
         guard !matching.isEmpty else { return }
+        pendingReads.append(contentsOf: matching)
+
+        // Coalesce. With the kernel tap, a compile or a Spotlight sweep can
+        // deliver thousands of reads a second; rebuilding and re-sorting the
+        // whole list on every 0.4s drain thrashed the table so badly the header
+        // itself stopped drawing. Publishing at most once a second, off the
+        // hot path, keeps the list live without fighting the UI.
+        guard !readsMergeScheduled else { return }
+        readsMergeScheduled = true
+        Task { @MainActor [weak self] in
+            try? await Task.sleep(for: .seconds(1))
+            self?.flushPendingReads()
+        }
+    }
+
+    private func flushPendingReads() {
+        readsMergeScheduled = false
+        let batch = pendingReads
+        pendingReads.removeAll(keepingCapacity: true)
+        guard !batch.isEmpty else { return }
 
         var byPath = Dictionary(uniqueKeysWithValues: readGroups.map { ($0.path, $0) })
-        for event in matching {
+        for event in batch {
             let existing = byPath[event.path]?.events ?? []
-            byPath[event.path] = ReadGroup(path: event.path, events: [event] + existing)
+            // One file's history is bounded: a process re-reading it all day
+            // should not grow this without limit.
+            byPath[event.path] = ReadGroup(path: event.path,
+                                           events: Array(([event] + existing).prefix(200)))
         }
-        readGroups = byPath.values.sorted { $0.lastRead > $1.lastRead }
+        // Keep the list itself bounded too, newest first.
+        readGroups = Array(byPath.values.sorted { $0.lastRead > $1.lastRead }.prefix(5_000))
     }
 
     /// Results of searching inside captured contents, which is a scan rather
