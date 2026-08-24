@@ -75,6 +75,16 @@ public final class ProcessAuditor: @unchecked Sendable {
 
     /// Identifies processes connected to `path`. Call as soon as possible after
     /// the change — evidence decays within seconds.
+    /// Describes one known process. Used where the holder is not in doubt —
+    /// a read is attributed to whichever process had the descriptor, which is
+    /// evidence rather than inference.
+    public func describe(pid: Int32, evidence: AttributionEvidence) -> AttributionResult {
+        guard let actor = actorFor(pid: pid, evidence: evidence) else {
+            return AttributionResult(actors: [], blockedByPrivileges: true, scannedProcesses: 1)
+        }
+        return AttributionResult(actors: [actor], scannedProcesses: 1)
+    }
+
     public func attribute(path: String, at eventTime: Date = Date()) -> AttributionResult {
         let parent = (path as NSString).deletingLastPathComponent
         var actors: [ProcessActor] = []

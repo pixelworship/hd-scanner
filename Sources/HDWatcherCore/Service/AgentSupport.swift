@@ -188,6 +188,10 @@ public struct AgentConfiguration: Codable, Sendable {
     public var hotspotHalfLifeMinutes: Int
     public var rules: [AlertRule]
     public var postsNotifications: Bool
+    public var trackFileReads: Bool
+    public var readSampleSeconds: Double
+    public var readRoots: [String]
+    public var readExcludePatterns: [GlobPattern]
     public var captureFileContents: Bool
     public var contentRetention: SnapshotRetention
     public var maxCaptureFileBytes: Int64
@@ -206,6 +210,10 @@ public struct AgentConfiguration: Codable, Sendable {
                 hotspotHalfLifeMinutes: Int = 15,
                 rules: [AlertRule] = [],
                 postsNotifications: Bool = false,
+                trackFileReads: Bool = true,
+                readSampleSeconds: Double = 2,
+                readRoots: [String] = [],
+                readExcludePatterns: [GlobPattern] = FileAccessMonitor.defaultExclusions,
                 captureFileContents: Bool = true,
                 contentRetention: SnapshotRetention = .oneDay,
                 maxCaptureFileBytes: Int64 = 32 * 1024 * 1024,
@@ -223,6 +231,10 @@ public struct AgentConfiguration: Codable, Sendable {
         self.hotspotHalfLifeMinutes = hotspotHalfLifeMinutes
         self.rules = rules
         self.postsNotifications = postsNotifications
+        self.trackFileReads = trackFileReads
+        self.readSampleSeconds = readSampleSeconds
+        self.readRoots = readRoots
+        self.readExcludePatterns = readExcludePatterns
         self.captureFileContents = captureFileContents
         self.contentRetention = contentRetention
         self.maxCaptureFileBytes = maxCaptureFileBytes
@@ -244,6 +256,10 @@ public struct AgentConfiguration: Codable, Sendable {
                   hotspotHalfLifeMinutes: settings.hotspotHalfLifeMinutes,
                   rules: rules,
                   postsNotifications: settings.notificationsEnabled,
+                  trackFileReads: settings.trackFileReads,
+                  readSampleSeconds: settings.readSampleSeconds,
+                  readRoots: settings.readRoots,
+                  readExcludePatterns: settings.readExcludePatterns,
                   captureFileContents: settings.captureFileContents,
                   contentRetention: settings.contentRetention,
                   maxCaptureFileBytes: settings.maxCaptureFileBytes,
@@ -263,6 +279,12 @@ public struct AgentConfiguration: Codable, Sendable {
         settings.transferCorrelationWindowSeconds = transferCorrelationWindowSeconds
         settings.hotspotHalfLifeMinutes = hotspotHalfLifeMinutes
         settings.notificationsEnabled = postsNotifications
+        settings.trackFileReads = trackFileReads
+        settings.readSampleSeconds = readSampleSeconds
+        // An empty list means the app never said; the daemon runs as root with
+        // no home of its own, so falling back to its own would watch nothing.
+        if !readRoots.isEmpty { settings.readRoots = readRoots }
+        settings.readExcludePatterns = readExcludePatterns
         // The daemon captures contents too, sealed to the ingest key: without
         // it, recovery simply stops the moment the app is quit.
         settings.captureFileContents = captureFileContents

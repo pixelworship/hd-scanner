@@ -48,6 +48,21 @@ public struct AppSettings: Codable, Sendable, Equatable {
     /// registration state is a consequence of this, never the source of it.
     public var backgroundRecordingEnabled: Bool
 
+    // Reads
+    /// Whether to record which files are *read*, and by what.
+    ///
+    /// FSEvents cannot see reads — nothing changes on disk — so this is done by
+    /// sampling the kernel's list of open file descriptors. It catches anything
+    /// held open when a sample runs and misses a file opened and closed between
+    /// two of them.
+    public var trackFileReads: Bool
+    /// How often to sample. Shorter catches more and costs more.
+    public var readSampleSeconds: Double
+    /// Where to look. Everything reads /usr/lib all day; that is not a finding.
+    public var readRoots: [String]
+    /// Noise to leave out: caches, code, temporary files, our own storage.
+    public var readExcludePatterns: [GlobPattern]
+
     // Storage
     // The event log has no retention setting: it is a permanent audit trail.
 
@@ -89,6 +104,10 @@ public struct AppSettings: Codable, Sendable, Equatable {
         transferCorrelationWindowSeconds: Double = 90,
         detectContentSignatures: Bool = true,
         hotspotHalfLifeMinutes: Int = 15,
+        trackFileReads: Bool = true,
+        readSampleSeconds: Double = 2,
+        readRoots: [String] = FileAccessMonitor.defaultRoots,
+        readExcludePatterns: [GlobPattern] = FileAccessMonitor.defaultExclusions,
         captureFileContents: Bool = true,
         contentRetention: SnapshotRetention = .oneDay,
         maxCaptureFileBytes: Int64 = 32 * 1024 * 1024,
@@ -117,6 +136,10 @@ public struct AppSettings: Codable, Sendable, Equatable {
         self.transferCorrelationWindowSeconds = transferCorrelationWindowSeconds
         self.detectContentSignatures = detectContentSignatures
         self.hotspotHalfLifeMinutes = hotspotHalfLifeMinutes
+        self.trackFileReads = trackFileReads
+        self.readSampleSeconds = readSampleSeconds
+        self.readRoots = readRoots
+        self.readExcludePatterns = readExcludePatterns
         self.captureFileContents = captureFileContents
         self.contentRetention = contentRetention
         self.maxCaptureFileBytes = maxCaptureFileBytes
@@ -158,6 +181,11 @@ public struct AppSettings: Codable, Sendable, Equatable {
 
         hotspotHalfLifeMinutes = try c.decodeIfPresent(Int.self, forKey: .hotspotHalfLifeMinutes) ?? d.hotspotHalfLifeMinutes
 
+        trackFileReads = try c.decodeIfPresent(Bool.self, forKey: .trackFileReads) ?? d.trackFileReads
+        readSampleSeconds = try c.decodeIfPresent(Double.self, forKey: .readSampleSeconds) ?? d.readSampleSeconds
+        readRoots = try c.decodeIfPresent([String].self, forKey: .readRoots) ?? d.readRoots
+        readExcludePatterns = try c.decodeIfPresent([GlobPattern].self, forKey: .readExcludePatterns)
+            ?? d.readExcludePatterns
         captureFileContents = try c.decodeIfPresent(Bool.self, forKey: .captureFileContents) ?? d.captureFileContents
         contentRetention = try c.decodeIfPresent(SnapshotRetention.self, forKey: .contentRetention) ?? d.contentRetention
         maxCaptureFileBytes = try c.decodeIfPresent(Int64.self, forKey: .maxCaptureFileBytes) ?? d.maxCaptureFileBytes

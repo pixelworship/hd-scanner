@@ -10,7 +10,8 @@ struct MainView: View {
         NavigationSplitView {
             List(selection: $model.selection) {
                 Section("Monitor") {
-                    row(.dashboard); row(.live); row(.hotspots); row(.transfers); row(.recovery)
+                    row(.dashboard); row(.live); row(.hotspots); row(.transfers)
+                    row(.reads); row(.recovery)
                 }
                 Section("Security") {
                     row(.alerts); row(.rules); row(.integrity)
@@ -57,6 +58,7 @@ struct MainView: View {
         case .live:      LiveFeedView()
         case .hotspots:  HotspotsView()
         case .transfers: TransfersView()
+        case .reads:     ReadsView()
         case .recovery:  RecoveryView()
         case .alerts:    AlertsView()
         case .rules:     RulesView()

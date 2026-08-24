@@ -151,6 +151,7 @@ struct MonitoringSettings: View {
             }
             .card()
 
+            readsCard
             coverageCard
             permissionsCard
         }
@@ -251,6 +252,51 @@ struct MonitoringSettings: View {
             return "A watch on / covers every volume mounted beneath it, including external drives."
         }
         return "Watching \(watched.count) specific root\(watched.count == 1 ? "" : "s")."
+    }
+
+    /// Reads are a different mechanism from everything else here, and the
+    /// difference is worth stating where it is switched on.
+    private var readsCard: some View {
+        @Bindable var model = model
+        return VStack(alignment: .leading, spacing: 10) {
+            SectionHeader(title: "Reading",
+                          subtitle: "Which files are opened, and by what")
+
+            Toggle("Record which files are read", isOn: $model.settings.trackFileReads)
+                .onChange(of: model.settings.trackFileReads) { _, _ in model.applySettings() }
+
+            Text("Nothing changes on disk when a file is read, so FSEvents cannot report it. This samples the kernel's list of open files instead: it catches anything held open when a sample runs, and misses a file opened and closed between two of them. Endpoint Security would see every open, and needs an entitlement Apple grants by application.")
+                .font(.caption).foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+
+            HStack(spacing: 10) {
+                Text("Sample every").font(.callout)
+                Picker("", selection: $model.settings.readSampleSeconds) {
+                    Text("1 second").tag(1.0)
+                    Text("2 seconds").tag(2.0)
+                    Text("5 seconds").tag(5.0)
+                    Text("15 seconds").tag(15.0)
+                }
+                .labelsHidden()
+                .frame(width: 140)
+                .onChange(of: model.settings.readSampleSeconds) { _, _ in model.applySettings() }
+                Text("shorter catches more, and costs more")
+                    .font(.caption).foregroundStyle(.tertiary)
+                Spacer()
+            }
+            .disabled(!model.settings.trackFileReads)
+
+            VStack(alignment: .leading, spacing: 3) {
+                Text("Where it looks").font(.caption.weight(.medium))
+                ForEach(model.settings.readRoots, id: \.self) { root in
+                    Text(root).font(.caption.monospaced()).foregroundStyle(.secondary)
+                }
+                Text("Every process reads /usr/lib all day; that is not a finding. Caches, code and the app's own files are excluded.")
+                    .font(.system(size: 9)).foregroundStyle(.tertiary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+        }
+        .card()
     }
 
     /// Answers the question the permission probe does not: what is actually

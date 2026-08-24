@@ -10,6 +10,9 @@ public enum EventKind: String, Codable, Sendable, CaseIterable, Hashable {
     case renamed
     case cloned
     case metadata          // inode meta, owner, xattr, Finder info
+    /// A file was held open by a process. Reads change nothing on disk, so
+    /// FSEvents never reports them; these come from sampling open descriptors.
+    case read
     case mounted
     case unmounted
     case copiedIn          // inferred: content arrived from another volume
@@ -29,6 +32,7 @@ public enum EventKind: String, Codable, Sendable, CaseIterable, Hashable {
         case .renamed:   return "Renamed"
         case .cloned:    return "Cloned"
         case .metadata:  return "Metadata"
+        case .read:      return "Read"
         case .mounted:   return "Volume Mounted"
         case .unmounted: return "Volume Ejected"
         case .copiedIn:  return "Copied In"
@@ -50,6 +54,7 @@ public enum EventKind: String, Codable, Sendable, CaseIterable, Hashable {
         case .renamed:   return "character.cursor.ibeam"
         case .cloned:    return "doc.on.doc"
         case .metadata:  return "tag"
+        case .read:      return "eye"
         case .mounted:   return "externaldrive.badge.plus"
         case .unmounted: return "externaldrive.badge.minus"
         case .copiedIn:  return "arrow.down.doc"

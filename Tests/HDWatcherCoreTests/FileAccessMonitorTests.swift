@@ -1,0 +1,231 @@
+import XCTest
+@testable import HDWatcherCore
+
+/// Reading a file changes nothing on disk, so FSEvents never reports it — which
+/// is why copying a document to a USB stick leaves no trace on the source side.
+/// This samples the kernel's list of open descriptors instead. It catches
+/// anything held open when a sample runs, and misses a file opened and closed
+/// entirely between two samples; the tests say which is which rather than
+/// pretending the coverage is complete.
+final class FileAccessMonitorTests: XCTestCase {
+
+    private var directory: URL!
+
+    override func setUpWithError() throws {
+        // Canonical from the start: the kernel reports open descriptors as
+        // /private/var/…, and comparing those to /var/… matches nothing.
+        let raw = FileManager.default.temporaryDirectory
+            .appendingPathComponent("hdw-reads-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: raw, withIntermediateDirectories: true)
+        directory = URL(fileURLWithPath: AppPaths.canonicalPath(raw.path))
+    }
+
+    override func tearDownWithError() throws {
+        try? FileManager.default.removeItem(at: directory)
+    }
+
+    private func monitor(roots: [String]? = nil) -> FileAccessMonitor {
+        var configuration = FileAccessMonitor.Configuration()
+        configuration.roots = roots ?? [directory.path]
+        configuration.excludePatterns = []
+        return FileAccessMonitor(configuration: configuration)
+    }
+
+    /// The first sample records what is already open without reporting it —
+    /// those opens happened before anyone was watching. Tests that want to
+    /// observe an open have to be watching first.
+    private func primed(roots: [String]? = nil) -> FileAccessMonitor {
+        let watcher = monitor(roots: roots)
+        watcher.sample()
+        return watcher
+    }
+
+    func testAFileHeldOpenByAnotherProcessIsSeen() throws {
+        let file = directory.appendingPathComponent("quarterly-figures.txt")
+        try String(repeating: "confidential\n", count: 100).write(to: file, atomically: true, encoding: .utf8)
+
+        // Watching *before* the file is opened: an open that happened before
+        // anyone was looking is not an observed read.
+        let watcher = primed()
+
+        // A real second process: this monitor deliberately ignores its own pid,
+        // and holding the file open in-process would prove nothing.
+        let reader = Process()
+        reader.executableURL = URL(fileURLWithPath: "/bin/sh")
+        reader.arguments = ["-c", "exec 3< '\(file.path)'; sleep 4"]
+        try reader.run()
+        defer { reader.terminate() }
+        Thread.sleep(forTimeInterval: 0.7)
+
+        let started = watcher.sample()
+        XCTAssertTrue(started.contains { $0.path == file.path },
+                      "a file held open for reading must be reported: \(started.map(\.path))")
+        // A child that inherits the descriptor holds the file too, and is
+        // reported in its own right — attribution follows whoever has it open,
+        // which is what "who read this" means.
+        let holders = started.filter { $0.path == file.path }
+        XCTAssertTrue(holders.contains { $0.pid == reader.processIdentifier },
+                      "the process that opened it must be among the holders")
+        XCTAssertEqual(holders.first?.fileName, "quarterly-figures.txt")
+        XCTAssertFalse(holders.contains { $0.processName.isEmpty })
+    }
+
+    func testTheReadIsReportedFinishedOnceTheFileIsClosed() throws {
+        let file = directory.appendingPathComponent("notes.txt")
+        try "some notes".write(to: file, atomically: true, encoding: .utf8)
+
+        let watcher = primed()
+
+        let reader = Process()
+        reader.executableURL = URL(fileURLWithPath: "/bin/sh")
+        reader.arguments = ["-c", "exec 3< '\(file.path)'; sleep 1"]
+        try reader.run()
+        Thread.sleep(forTimeInterval: 0.5)
+
+        var finished: [FileAccessMonitor.Access] = []
+        watcher.onAccessFinished = { finished.append($0) }
+
+        watcher.sample()                       // sees it open
+        reader.waitUntilExit()
+        Thread.sleep(forTimeInterval: 0.3)
+        watcher.sample()                       // sees it gone
+
+        XCTAssertTrue(finished.contains { $0.path == file.path },
+                      "closing the file is what makes the read a complete fact")
+    }
+
+    func testHowLongItWasHeldIsCounted() throws {
+        let file = directory.appendingPathComponent("held.bin")
+        try Data(repeating: 7, count: 1_024).write(to: file)
+
+        let watcher = primed()
+
+        let reader = Process()
+        reader.executableURL = URL(fileURLWithPath: "/bin/sh")
+        reader.arguments = ["-c", "exec 3< '\(file.path)'; sleep 4"]
+        try reader.run()
+        defer { reader.terminate() }
+        Thread.sleep(forTimeInterval: 0.7)
+
+        watcher.sample()
+        Thread.sleep(forTimeInterval: 0.4)
+        watcher.sample()
+
+        var finished: [FileAccessMonitor.Access] = []
+        watcher.onAccessFinished = { finished.append($0) }
+        watcher.stop()                          // treats whatever is open as done
+
+        let access = try XCTUnwrap(finished.first { $0.path == file.path })
+        XCTAssertEqual(access.samples, 2, "each sighting counts once")
+        XCTAssertGreaterThan(access.duration, 0.3)
+    }
+
+    func testOnlyFilesUnderTheChosenRootsAreConsidered() throws {
+        let inside = directory.appendingPathComponent("inside.txt")
+        try "x".write(to: inside, atomically: true, encoding: .utf8)
+        let watcher = monitor(roots: ["/nowhere-in-particular"])
+        XCTAssertFalse(watcher.isInteresting(inside.path))
+        XCTAssertTrue(monitor().isInteresting(inside.path))
+    }
+
+    func testTheNoiseEveryProcessMakesIsExcluded() {
+        var configuration = FileAccessMonitor.Configuration()
+        configuration.roots = ["/"]
+        let watcher = FileAccessMonitor(configuration: configuration)
+        // Reading these is every process, all the time, and tells nobody
+        // anything.
+        XCTAssertFalse(watcher.isInteresting("/Users/x/Library/Caches/foo/bar.db"))
+        XCTAssertFalse(watcher.isInteresting("/usr/lib/libSystem.dylib"))
+        XCTAssertFalse(watcher.isInteresting("/private/var/folders/ab/cd/T/tmpfile"))
+        XCTAssertFalse(watcher.isInteresting("/Library/Application Support/co.pixelworship.hdwatcher/log/seg-1.hdwseg"))
+    }
+
+    func testDirectoriesAndMissingPathsAreNotReads() throws {
+        XCTAssertFalse(monitor().isInteresting(directory.path), "a directory is not a read")
+        XCTAssertFalse(monitor().isInteresting(directory.appendingPathComponent("gone.txt").path))
+        XCTAssertFalse(monitor().isInteresting(""))
+    }
+
+    func testItStopsTrackingRatherThanGrowingWithoutBound() throws {
+        var configuration = FileAccessMonitor.Configuration()
+        configuration.roots = [directory.path]
+        configuration.excludePatterns = []
+        configuration.maximumTrackedAccesses = 3
+        let watcher = FileAccessMonitor(configuration: configuration)
+        watcher.sample()      // prime
+
+        var handles: [FileHandle] = []
+        defer { handles.forEach { try? $0.close() } }
+        for index in 0..<10 {
+            let file = directory.appendingPathComponent("f\(index).txt")
+            try "x".write(to: file, atomically: true, encoding: .utf8)
+            if let handle = try? FileHandle(forReadingFrom: file) { handles.append(handle) }
+        }
+        XCTAssertLessThanOrEqual(watcher.sample().count, 3,
+                                 "a runaway process must not be able to fill the log")
+    }
+}
+
+/// Reads are ordinary events in the same encrypted log, so they inherit its
+/// guarantees — searchable, attributable, append-only — rather than living in
+/// some second store with weaker ones.
+final class ReadEventTests: XCTestCase {
+
+    func testAReadIsAFirstClassEventKind() {
+        XCTAssertEqual(EventKind.read.displayName, "Read")
+        XCTAssertFalse(EventKind.read.isTransfer)
+        XCTAssertFalse(EventKind.read.isEgress)
+    }
+
+    func testTheDaemonIsToldWhetherToTrackReads() {
+        var settings = AppSettings.default
+        settings.trackFileReads = true
+        settings.readSampleSeconds = 5
+        settings.readRoots = ["/Users/someone", "/Volumes"]
+
+        let configuration = AgentConfiguration(from: settings, rules: [], enabled: true)
+        let round = configuration.appSettings
+        XCTAssertTrue(round.trackFileReads)
+        XCTAssertEqual(round.readSampleSeconds, 5)
+        XCTAssertEqual(round.readRoots, ["/Users/someone", "/Volumes"])
+    }
+
+    func testAnEmptyRootListDoesNotWipeTheDaemonsOwn() {
+        // The daemon runs as root with no home of its own; taking an empty list
+        // literally would leave it watching nowhere.
+        var configuration = AgentConfiguration()
+        configuration.readRoots = []
+        XCTAssertFalse(configuration.appSettings.readRoots.isEmpty)
+    }
+
+    func testReadTrackingCanBeTurnedOff() {
+        var settings = AppSettings.default
+        settings.trackFileReads = false
+        let configuration = AgentConfiguration(from: settings, rules: [], enabled: true)
+        XCTAssertFalse(configuration.appSettings.trackFileReads)
+    }
+}
+
+/// What the defaults are for, measured on a real machine: watching the whole
+/// home produced about eleven thousand opens a minute — app databases, group
+/// containers, sync state — which would bury anything a person cares about and
+/// bloat a permanent log.
+final class ReadDefaultsTests: XCTestCase {
+
+    func testItWatchesWhereDocumentsLiveNotTheWholeHome() {
+        let roots = FileAccessMonitor.defaultRoots
+        XCTAssertFalse(roots.contains(NSHomeDirectory()), "the whole home is eleven thousand opens a minute")
+        XCTAssertTrue(roots.contains(NSHomeDirectory() + "/Documents"))
+        XCTAssertTrue(roots.contains(NSHomeDirectory() + "/Desktop"))
+        XCTAssertTrue(roots.contains("/Volumes"), "external drives are the point")
+    }
+
+    func testApplicationPlumbingIsExcluded() {
+        var configuration = FileAccessMonitor.Configuration()
+        configuration.roots = ["/"]
+        let watcher = FileAccessMonitor(configuration: configuration)
+        XCTAssertFalse(watcher.isInteresting(NSHomeDirectory() + "/Library/Group Containers/group.com.apple.reminders/Data.sqlite"))
+        XCTAssertFalse(watcher.isInteresting(NSHomeDirectory() + "/Documents/project/node_modules/pkg/index.js"))
+        XCTAssertFalse(watcher.isInteresting(NSHomeDirectory() + "/Documents/repo/.git/objects/ab/cdef"))
+    }
+}

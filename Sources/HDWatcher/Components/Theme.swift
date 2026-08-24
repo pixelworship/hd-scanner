@@ -31,6 +31,7 @@ extension EventKind {
         case .removed:               return .red
         case .renamed:               return .purple
         case .metadata:              return .secondary
+        case .read:                  return .cyan
         case .mounted:               return .teal
         case .unmounted:             return .brown
         case .copiedOut, .movedOut:  return .orange

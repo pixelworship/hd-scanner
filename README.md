@@ -295,6 +295,33 @@ application directory modified.
 `securityd` running as root, and the kernel will not show its descriptors to an
 unprivileged process. The app says so explicitly rather than shrugging.
 
+### Reads — who opened what
+
+FSEvents reports changes, and reading a file changes nothing, which is why
+copying a document to a USB stick leaves no trace on the source side. The Reads
+tab answers the question a change log cannot: which files were opened, and by
+what.
+
+It works by sampling the kernel's list of open file descriptors. What that
+catches is anything held open when a sample runs, with the process holding it —
+attribution here is evidence rather than inference, and carries the signing
+identity and team like every other actor in the app. What it misses is a file
+opened and closed entirely between two samples. Endpoint Security would see
+every open exactly, and needs an entitlement Apple grants by application; the
+seam for it is the same `FileAccessMonitor` interface.
+
+Defaults matter more than the mechanism here. Watching the whole home produced
+**about eleven thousand opens a minute** on a real machine — app databases,
+group containers, sync state — which would bury anything worth seeing and bloat
+a permanent log. So the default roots are where documents live (Desktop,
+Documents, Downloads, Pictures, Movies, Music, Public) plus `/Volumes`, with
+`~/Library`, caches, code, `node_modules` and `.git` excluded. The same
+measurement with those defaults, idle: zero. Reading one document: one event.
+
+The first sample after recording starts records what is already open **without
+reporting it** — those files were opened before anyone was watching, and calling
+them reads that happened now would be a lie the log keeps forever.
+
 ### Recovering deleted and changed files
 HDWatcher keeps a copy of file contents in a single encrypted container
 (`contents.hdw`), so you can review what changed and recover a file after it is
@@ -599,7 +626,7 @@ Tests/HDWatcherCoreTests/    unit + live filesystem integration tests
 swift test
 ```
 
-312 tests, runnable with `swift test` or through the Xcode scheme. Unit tests cover the vault, log round-trips, tamper detection, rule
+327 tests, runnable with `swift test` or through the Xcode scheme. Unit tests cover the vault, log round-trips, tamper detection, rule
 matching, burst and cooldown behaviour, hotspot rollup, filtering, the content
 container (capture, dedup, retention, restore, compaction, encryption at rest)
 the diff engine, and volume classification. Integration tests mount a real disk

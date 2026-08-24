@@ -14,7 +14,7 @@ enum AppPhase: Equatable {
 }
 
 enum SidebarSection: String, CaseIterable, Identifiable, Hashable {
-    case dashboard, live, hotspots, transfers, recovery, alerts, rules, volumes, forensics, integrity, settings
+    case dashboard, live, hotspots, transfers, reads, recovery, alerts, rules, volumes, forensics, integrity, settings
 
     var id: String { rawValue }
 
@@ -24,6 +24,7 @@ enum SidebarSection: String, CaseIterable, Identifiable, Hashable {
         case .live:      return "Live Feed"
         case .hotspots:  return "Hotspots"
         case .transfers: return "Transfers"
+        case .reads:     return "Reads"
         case .recovery:  return "Recovery"
         case .alerts:    return "Alerts"
         case .rules:     return "Rules"
@@ -40,6 +41,7 @@ enum SidebarSection: String, CaseIterable, Identifiable, Hashable {
         case .live:      return "waveform.path.ecg"
         case .hotspots:  return "flame"
         case .transfers: return "arrow.left.arrow.right"
+        case .reads:     return "eye"
         case .recovery:  return "clock.arrow.circlepath"
         case .alerts:    return "bell"
         case .rules:     return "slider.horizontal.3"
@@ -87,6 +89,62 @@ final class AppModel {
     var topExtensions: [ExtensionStat] = []
     var transfers: [FileEvent] = []
     /// Everything in the vault, grouped. Rebuilt only when the vault changes.
+    // MARK: - Reads
+
+    /// One file, and every time something was seen holding it open.
+    struct ReadGroup: Identifiable, Sendable {
+        var id: String { path }
+        let path: String
+        let events: [FileEvent]        // newest first
+
+        var fileName: String { (path as NSString).lastPathComponent }
+        var directory: String { (path as NSString).deletingLastPathComponent }
+        var lastRead: Date { events.first?.timestamp ?? .distantPast }
+        var readers: [String] {
+            var seen: [String] = []
+            for event in events {
+                guard let name = event.attribution?.best?.name else { continue }
+                if !seen.contains(name) { seen.append(name) }
+            }
+            return seen
+        }
+    }
+
+    var readGroups: [ReadGroup] = []
+    var isLoadingReads = false
+    private var readsTask: Task<Void, Never>?
+    private var readsSignature: String?
+
+    /// Rebuilds the list of files that were read. Reads are ordinary events in
+    /// the same encrypted log, so this is a query rather than another store.
+    func refreshReads(search: String? = nil, limit: Int = 20_000, force: Bool = false) {
+        guard let store else { return }
+        let signature = "\(store.totalEventCount)|\(search ?? "")"
+        guard force || signature != readsSignature else { return }
+
+        readsTask?.cancel()
+        if readGroups.isEmpty { isLoadingReads = true }
+        readsTask = Task { [weak self] in
+            let groups = await Task.detached(priority: .userInitiated) { () -> [ReadGroup] in
+                var query = EventQuery()
+                query.kinds = [.read]
+                query.limit = limit
+                query.newestFirst = true
+                if let search, !search.isEmpty { query.pathContains = search }
+
+                var byPath: [String: [FileEvent]] = [:]
+                for event in store.query(query) { byPath[event.path, default: []].append(event) }
+                return byPath
+                    .map { ReadGroup(path: $0.key, events: $0.value.sorted { $0.timestamp > $1.timestamp }) }
+                    .sorted { $0.lastRead > $1.lastRead }
+            }.value
+            guard !Task.isCancelled, let self else { return }
+            self.readGroups = groups
+            self.isLoadingReads = false
+            self.readsSignature = signature
+        }
+    }
+
     /// Results of searching inside captured contents, which is a scan rather
     /// than a filter and so is kept separate from the grouped list.
     var contentHits: [ContentSearchEngine.Hit] = []

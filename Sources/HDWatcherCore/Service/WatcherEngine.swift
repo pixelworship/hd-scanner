@@ -25,6 +25,7 @@ public final class WatcherEngine: @unchecked Sendable {
 
     // Components
     public let registry = VolumeRegistry()
+    private var readMonitor: FileAccessMonitor?
     public let hotspots: HotspotTracker
     public let stats = ActivityStats()
     public let notifier = Notifier()
@@ -313,10 +314,51 @@ public final class WatcherEngine: @unchecked Sendable {
 
         if ok {
             startMaintenance()
+            startReadTracking()
             recordMonitoringMarker(.monitoringStarted, cursor: cursor, paths: paths)
         }
         onStatusChange?(snapshot)
         return ok
+    }
+
+    /// Starts recording what is being *read*.
+    ///
+    /// Nothing in FSEvents reports a read, so this samples open file
+    /// descriptors instead. Each finished read becomes an ordinary event in the
+    /// same encrypted log — searchable, attributable, and as tamper-evident as
+    /// everything else in there.
+    private func startReadTracking() {
+        mutex.lock()
+        let wanted = settings.trackFileReads
+        var configuration = FileAccessMonitor.Configuration()
+        configuration.interval = max(0.5, settings.readSampleSeconds)
+        configuration.roots = settings.readRoots
+        configuration.excludePatterns = settings.readExcludePatterns
+        mutex.unlock()
+        guard wanted else { return }
+
+        let watcher = FileAccessMonitor(configuration: configuration)
+        // Recorded when the file is *opened*, not when it is closed. Waiting
+        // for the close would mean a process that holds a document open all
+        // afternoon never appears in the log at all, and the fact worth
+        // recording — this process opened this file at this time — is already
+        // true the moment it happens.
+        watcher.onAccessStarted = { [weak self] access in
+            self?.recordRead(access)
+        }
+        watcher.start()
+        readMonitor = watcher
+    }
+
+    private func recordRead(_ access: FileAccessMonitor.Access) {
+        var event = FileEvent(timestamp: access.openedAt, kind: .read, path: access.path)
+        event.volumeID = registry.volume(for: access.path)?.id
+        var info = stat()
+        if lstat(access.path, &info) == 0 { event.size = Int64(info.st_size) }
+        // The process holding the descriptor is not a guess — it is the answer.
+        event.attribution = processAuditor.describe(pid: access.pid, evidence: .holdsFileOpen)
+        store.record(event)
+        hotspots.record([event])
     }
 
     /// Writes a marker so the log itself says when recording began or ended, and
@@ -378,6 +420,8 @@ public final class WatcherEngine: @unchecked Sendable {
 
         monitor.stop()
         sentinel.stop()
+        readMonitor?.stop()
+        readMonitor = nil
         maintenanceTimer?.cancel()
         maintenanceTimer = nil
         store.flush()
