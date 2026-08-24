@@ -33,7 +33,7 @@ struct ReadsView: View {
                     message: "Turn on \"Record which files are read\" in Settings → Monitoring. Reads are found by sampling open files, which is the only way to see them at all: nothing changes on disk when a file is read.")
             } else if model.isLoadingReads && groups.isEmpty {
                 LoadingStateView(message: "Reading the log…",
-                                 detail: "Every recorded read, grouped by file.")
+                                 detail: "Scanning the last day of the encrypted log — the first pass on a large log can take a while. New reads stream in live once it lands.")
             } else if groups.isEmpty {
                 EmptyStateView(
                     symbol: "eye",

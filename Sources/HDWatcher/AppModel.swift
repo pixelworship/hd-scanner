@@ -113,21 +113,30 @@ final class AppModel {
     var readGroups: [ReadGroup] = []
     var isLoadingReads = false
     private var readsTask: Task<Void, Never>?
-    private var readsSignature: String?
-    private var lastReadsPass: Date?
+    private var readsGate = ReadsRefreshGate()
+    /// The search the visible list was built for; live merges honour it.
+    private var currentReadsSearch = ""
+
 
     /// Rebuilds the list of files that were read. Reads are ordinary events in
     /// the same encrypted log, so this is a query rather than another store.
+    ///
+    /// The gate is the load-bearing part: the poll fires every two seconds, the
+    /// query over a real log takes longer than that, and two shipped attempts
+    /// at guarding this inline still cancelled the running pass from a cold
+    /// start — so the list never appeared. The rule lives in ReadsRefreshGate,
+    /// where it is tested.
     func refreshReads(search: String? = nil, limit: Int = 20_000, force: Bool = false,
-                      window: TimeInterval = 7 * 24 * 3_600) {
+                      window: TimeInterval = 24 * 3_600) {
         guard let store else { return }
-        // Deliberately not keyed on the event count: it changes constantly, and
-        // keying on it meant every poll cancelled the query still running and
-        // started another, so the list never appeared at all.
         let signature = search ?? ""
-        let recentlyDone = lastReadsPass.map { Date().timeIntervalSince($0) < 10 } ?? false
-        guard force || signature != readsSignature || !recentlyDone else { return }
-        guard readsTask == nil || force || signature != readsSignature else { return }
+        switch readsGate.decide(signature: signature, force: force) {
+        case .skip, .waitForRunning:
+            return
+        case .start:
+            break
+        }
+        currentReadsSearch = signature
 
         readsTask?.cancel()
         if readGroups.isEmpty { isLoadingReads = true }
@@ -148,13 +157,37 @@ final class AppModel {
                     .map { ReadGroup(path: $0.key, events: $0.value.sorted { $0.timestamp > $1.timestamp }) }
                     .sorted { $0.lastRead > $1.lastRead }
             }.value
-            guard !Task.isCancelled, let self else { return }
+            guard let self else { return }
+            guard !Task.isCancelled else {
+                self.readsGate.cancelled(signature: signature)
+                return
+            }
             self.readGroups = groups
             self.isLoadingReads = false
-            self.readsSignature = signature
-            self.lastReadsPass = Date()
+            self.readsGate.finished(signature: signature)
             self.readsTask = nil
         }
+    }
+
+    /// Folds freshly recorded events into the reads list.
+    ///
+    /// This is how new reads appear at all: the full query was measured at
+    /// three minutes on a real log, so it runs once per search and everything
+    /// afterwards arrives here, from the same stream that feeds the live feed.
+    func ingestReads(_ events: [FileEvent]) {
+        let matching = events.filter { event in
+            event.kind == .read
+                && (currentReadsSearch.isEmpty
+                    || event.path.localizedCaseInsensitiveContains(currentReadsSearch))
+        }
+        guard !matching.isEmpty else { return }
+
+        var byPath = Dictionary(uniqueKeysWithValues: readGroups.map { ($0.path, $0) })
+        for event in matching {
+            let existing = byPath[event.path]?.events ?? []
+            byPath[event.path] = ReadGroup(path: event.path, events: [event] + existing)
+        }
+        readGroups = byPath.values.sorted { $0.lastRead > $1.lastRead }
     }
 
     /// Results of searching inside captured contents, which is a scan rather
@@ -613,6 +646,8 @@ final class AppModel {
             }
         }
 
+        ingestReads(batch)
+
         // In viewer mode the events come from the agent's log rather than from
         // a monitor in this process.
         if isViewerMode, let store, let tailed = Optional(store.tailNewEvents()), !tailed.isEmpty {
@@ -631,6 +666,7 @@ final class AppModel {
                 engine?.hotspots.record(event)
                 engine?.stats.record(event)
             }
+            ingestReads(tailed)
         }
 
         refreshTick += 1

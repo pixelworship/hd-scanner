@@ -359,6 +359,9 @@ public final class WatcherEngine: @unchecked Sendable {
         event.attribution = processAuditor.describe(pid: access.pid, evidence: .holdsFileOpen)
         store.record(event)
         hotspots.record([event])
+        // Through the same pipe as every other event, so the Reads list learns
+        // about it without re-querying the log.
+        onEvents?([event])
     }
 
     /// Writes a marker so the log itself says when recording began or ended, and

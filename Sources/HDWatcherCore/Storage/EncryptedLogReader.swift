@@ -129,11 +129,21 @@ public struct EncryptedLogReader: Sendable {
             defer { try? handle.close() }
             guard let prefix = try? handle.read(upToCount: LogFormat.agentHeaderSize),
                   let head = LogFormat.SegmentHeader.decode(prefix) else { return nil }
-            let size = (try? FileManager.default.attributesOfItem(atPath: url.path)[.size] as? Int64) ?? 0
+            let attributes = try? FileManager.default.attributesOfItem(atPath: url.path)
+            let size = (attributes?[.size] as? Int64) ?? 0
             // sealed: false — the real block count is unknown from the header
             // alone, and asserting zero would read as truncated history.
+            //
+            // The time span is approximated conservatively: creation time is at
+            // or before the first event, the file's mtime at or after the last.
+            // Both errors only ever *include* a segment a window query could
+            // have skipped — never exclude one it needs. Without any span, a
+            // discovered segment is decrypted by every windowed query forever.
             return SegmentRecord(segmentIndex: head.segmentIndex, fileName: name,
-                                 createdAt: head.createdAt, byteSize: size ?? 0, sealed: false)
+                                 createdAt: head.createdAt,
+                                 firstEventAt: head.createdAt,
+                                 lastEventAt: (attributes?[.modificationDate] as? Date),
+                                 byteSize: size, sealed: false)
         }.sorted { $0.segmentIndex < $1.segmentIndex }
     }
 
