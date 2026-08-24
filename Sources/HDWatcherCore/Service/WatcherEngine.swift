@@ -36,6 +36,10 @@ public final class WatcherEngine: @unchecked Sendable {
         case sampling        // descriptor sampling: misses sub-interval reads
     }
     public private(set) var readCapture: ReadCapture = .off
+
+    /// Records the kernel dropped from the audit pipe under load. Zero unless a
+    /// burst outran the queue; nonzero means capture was briefly incomplete.
+    public var readDrops: UInt64 { auditReadMonitor?.kernelDrops ?? 0 }
     public let hotspots: HotspotTracker
     public let stats = ActivityStats()
     public let notifier = Notifier()

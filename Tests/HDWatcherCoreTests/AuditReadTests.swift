@@ -179,3 +179,45 @@ final class AuditReadMonitorTests: XCTestCase {
         XCTAssertEqual(seen, 3)
     }
 }
+
+/// The admit cache must speed up repeats without changing a single decision —
+/// a filter that admits different files when warmed would be far worse than a
+/// slow one.
+final class AuditAdmitCacheTests: XCTestCase {
+
+    private func real(_ name: String, in dir: URL) throws -> String {
+        let file = dir.appendingPathComponent(name)
+        try "x".write(to: file, atomically: true, encoding: .utf8)
+        return AppPaths.canonicalPath(file.path)
+    }
+
+    func testTheCacheDoesNotChangeWhichReadsAreAdmitted() throws {
+        let dir = FileManager.default.temporaryDirectory
+            .appendingPathComponent("hdw-cache-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: dir) }
+        let root = AppPaths.canonicalPath(dir.path)
+
+        let inside = try real("doc.txt", in: dir)
+        let m = AuditReadMonitor(configuration: .init(roots: [root], excludePatterns: [], debounceInterval: 0))
+        var admitted: [String] = []
+        m.onRead = { admitted.append($0.path) }
+
+        // Same path many times: admitted once per (debounce 0 → each), never
+        // flipping to rejected.
+        for i in 0..<20 {
+            m.handle(.init(path: inside, pid: Int32(1000 + i), euid: 501, event: 72,
+                           at: Date(), succeeded: true))
+        }
+        XCTAssertEqual(admitted.count, 20, "a cached admit must stay an admit")
+
+        // A path outside the root, repeated, must stay rejected however warm.
+        var rejectedSeen = 0
+        m.onRead = { _ in rejectedSeen += 1 }
+        for _ in 0..<20 {
+            m.handle(.init(path: "/usr/lib/libSystem.dylib", pid: 5, euid: 0, event: 72,
+                           at: Date(), succeeded: true))
+        }
+        XCTAssertEqual(rejectedSeen, 0, "a cached reject must stay a reject")
+    }
+}

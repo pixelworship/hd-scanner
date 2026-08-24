@@ -20,6 +20,7 @@ final class Agent {
     private var configuration = AgentConfiguration()
     private let recorderLock = RecorderLock()
     private var lockWatch: Timer?
+    private var lastReadDrops: UInt64 = 0
     private var configurationStamp: Date?
     private var ownerHome: String?
     private let trailGuard = AuditTrailGuard()
@@ -309,6 +310,17 @@ final class Agent {
         // overwrote the running one's counters: the app showed "0 events" and
         // "not responding" about a daemon that was recording perfectly well.
         guard recorderLock.isHeld || engine != nil else { return }
+
+        // A nonzero, growing audit-pipe drop count means "catches every open"
+        // stopped being true for a moment. Say so in the log rather than let it
+        // pass silently.
+        if let engine {
+            let drops = engine.readDrops
+            if drops > lastReadDrops {
+                log("audit pipe dropped \(drops - lastReadDrops) read record(s) under load (total \(drops))")
+                lastReadDrops = drops
+            }
+        }
 
         mutex.lock()
         var snapshot = status

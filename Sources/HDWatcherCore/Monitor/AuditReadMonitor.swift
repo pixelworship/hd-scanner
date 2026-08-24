@@ -38,10 +38,20 @@ public final class AuditReadMonitor: @unchecked Sendable {
     private let lock = NSLock()
     private var recentlyRecorded: [String: Date] = [:]
     private var lastSweep = Date()
+    // ReadFilter.admits() falls through to realpath() for any path not already
+    // under a watched root — which is almost everything the fr audit class
+    // delivers, thousands a second. The firehose reopens the same handful of
+    // system files endlessly, so caching the admit decision per path collapses
+    // that syscall cost without changing what is admitted. Bounded so it cannot
+    // grow without limit.
+    private var admitCache: [String: Bool] = [:]
+    private let admitCacheLimit = 8_192
 
     public var onRead: (@Sendable (Read) -> Void)?
     public private(set) var recordsSeen = 0
     public private(set) var recorded = 0
+    /// Records the kernel dropped under load; zero means complete capture.
+    public var kernelDrops: UInt64 { reader.kernelDrops }
 
     public init(configuration: Configuration, reader: AuditPipeReader = AuditPipeReader()) {
         self.reader = reader
@@ -64,7 +74,7 @@ public final class AuditReadMonitor: @unchecked Sendable {
     public func handle(_ raw: AuditPipeReader.Read) {
         recordsSeen += 1
         guard raw.succeeded else { return }
-        guard filter.admits(raw.path) else { return }
+        guard admits(raw.path) else { return }
 
         let key = "\(raw.path)|\(raw.pid)"
         lock.lock()
@@ -78,6 +88,22 @@ public final class AuditReadMonitor: @unchecked Sendable {
 
         recorded += 1
         onRead?(Read(path: raw.path, pid: raw.pid, euid: raw.euid, at: raw.at))
+    }
+
+    /// Admit decision, memoised. The result depends only on the path (roots,
+    /// exclusions, and whether it is a regular file), so a repeat is free.
+    private func admits(_ path: String) -> Bool {
+        lock.lock()
+        if let cached = admitCache[path] { lock.unlock(); return cached }
+        lock.unlock()
+
+        let verdict = filter.admits(path)
+
+        lock.lock()
+        if admitCache.count >= admitCacheLimit { admitCache.removeAll(keepingCapacity: true) }
+        admitCache[path] = verdict
+        lock.unlock()
+        return verdict
     }
 
     /// Forgets debounce entries past their window so the map cannot grow without

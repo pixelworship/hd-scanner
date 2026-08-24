@@ -35,4 +35,9 @@ int hdw_bsm_parse_record(const uint8_t *buf, size_t len, HDWBsmRead *out);
 // reconstructed on the Swift side.
 int hdw_auditpipe_configure(int fd);
 
+// Records the kernel dropped because this pipe's queue was full, since the pipe
+// was opened. "Catches every open" is only true while this stays zero, so it
+// has to be observable rather than assumed.
+unsigned long long hdw_auditpipe_drops(int fd);
+
 #endif

@@ -646,7 +646,7 @@ Tests/HDWatcherCoreTests/    unit + live filesystem integration tests
 swift test
 ```
 
-364 tests, runnable with `swift test` or through the Xcode scheme. Unit tests cover the vault, log round-trips, tamper detection, rule
+365 tests, runnable with `swift test` or through the Xcode scheme. Unit tests cover the vault, log round-trips, tamper detection, rule
 matching, burst and cooldown behaviour, hotspot rollup, filtering, the content
 container (capture, dedup, retention, restore, compaction, encryption at rest)
 the diff engine, and volume classification. Integration tests mount a real disk

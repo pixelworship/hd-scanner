@@ -106,3 +106,9 @@ int hdw_auditpipe_configure(int fd) {
 
     return 0;
 }
+
+unsigned long long hdw_auditpipe_drops(int fd) {
+    unsigned long long drops = 0;
+    if (ioctl(fd, AUDITPIPE_GET_DROPS, &drops) != 0) return 0;
+    return drops;
+}

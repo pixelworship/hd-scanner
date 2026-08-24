@@ -43,6 +43,15 @@ public final class AuditPipeReader: @unchecked Sendable {
     /// Raw records seen, before any filtering — a sign the tap is live.
     public private(set) var recordsSeen = 0
 
+    /// Records the kernel discarded because the pipe queue filled. Read from the
+    /// kernel on demand rather than counted here — a full queue means we never
+    /// saw them to count. Nonzero means "catches every open" is currently false.
+    public var kernelDrops: UInt64 {
+        stateLock.lock(); let descriptor = fd; stateLock.unlock()
+        guard descriptor >= 0 else { return 0 }
+        return hdw_auditpipe_drops(descriptor)
+    }
+
     public init(path: String = "/dev/auditpipe") {
         self.path = path
     }
