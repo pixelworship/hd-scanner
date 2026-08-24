@@ -4,10 +4,16 @@ import HDWatcherCore
 struct MainView: View {
     @Environment(AppModel.self) private var model
 
+    // Pinned so no screen's content can collapse the navigation sidebar. A
+    // detail view whose width demand fluctuates — the Reads list, churning once
+    // a second as new reads arrive — was making SwiftUI drop the sidebar column
+    // to make room, and never restore it.
+    @State private var columns: NavigationSplitViewVisibility = .all
+
     var body: some View {
         @Bindable var model = model
 
-        NavigationSplitView {
+        NavigationSplitView(columnVisibility: $columns) {
             List(selection: $model.selection) {
                 Section("Monitor") {
                     row(.dashboard); row(.live); row(.hotspots); row(.transfers)
@@ -29,6 +35,15 @@ struct MainView: View {
             detailView
                 .navigationTitle(model.selection.title)
                 .toolbar { toolbarContent }
+        }
+        // Both columns are always preferred; the sidebar is not sacrificed for
+        // detail width.
+        .navigationSplitViewStyle(.balanced)
+        // Belt and suspenders: if anything still drives the sidebar closed,
+        // switching screens brings it back rather than leaving the app looking
+        // broken.
+        .onChange(of: model.selection) { _, _ in
+            if columns == .detailOnly { columns = .all }
         }
     }
 

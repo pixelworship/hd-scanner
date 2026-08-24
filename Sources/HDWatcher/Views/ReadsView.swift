@@ -28,20 +28,23 @@ struct ReadsView: View {
 
             coverageBanner
 
-            // One structure, always. Swapping the whole pane between an empty
-            // state and an HSplitView is what broke this: reads arrive
-            // continuously, the list crosses empty/non-empty as scans and live
-            // merges land, and each crossing tore down and rebuilt an AppKit
-            // split view *inside* the navigation split view — which collapsed
-            // the sidebar and the header with it. The states are overlays on a
-            // container that never goes away.
-            HSplitView {
+            // A plain HStack, deliberately NOT an HSplitView. HSplitView is an
+            // AppKit NSSplitView, and it reports a fluctuating ideal width as
+            // the list churns once a second with new reads — which propagated
+            // up through the navigation split view and collapsed the sidebar.
+            // A fixed split has no such feedback. Recovery kept its HSplitView
+            // because its list does not churn; this one must not.
+            HStack(spacing: 0) {
                 fileList
-                    .frame(minWidth: 300, idealWidth: 380)
+                    .frame(width: 380)
                     .overlay { listState }
-                detail.frame(minWidth: 420)
+                Divider()
+                detail
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
             }
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
         }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
         .onAppear { reload(force: true) }
         .onChange(of: searchText) { _, _ in page.reset(); reload() }
         .task(id: pollKey) {
