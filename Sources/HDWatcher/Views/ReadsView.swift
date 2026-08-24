@@ -26,27 +26,20 @@ struct ReadsView: View {
             header
             Divider()
 
-            if !model.settings.trackFileReads {
-                EmptyStateView(
-                    symbol: "eye.slash",
-                    title: "Read tracking is off",
-                    message: "Turn on \"Record which files are read\" in Settings → Monitoring. Reads are found by sampling open files, which is the only way to see them at all: nothing changes on disk when a file is read.")
-            } else if model.isLoadingReads && groups.isEmpty {
-                LoadingStateView(message: "Reading the log…",
-                                 detail: "Scanning the last day of the encrypted log — the first pass on a large log can take a while. New reads stream in live once it lands.")
-            } else if groups.isEmpty {
-                EmptyStateView(
-                    symbol: "eye",
-                    title: searchText.isEmpty ? "Nothing read yet" : "No matches",
-                    message: searchText.isEmpty
-                        ? "As files are opened, the process holding them is recorded here. Files opened and closed between two samples are missed — the sampling interval is in Settings → Monitoring."
-                        : nil)
-            } else {
-                coverageBanner
-                HSplitView {
-                    fileList.frame(minWidth: 300, idealWidth: 380)
-                    detail.frame(minWidth: 420)
-                }
+            coverageBanner
+
+            // One structure, always. Swapping the whole pane between an empty
+            // state and an HSplitView is what broke this: reads arrive
+            // continuously, the list crosses empty/non-empty as scans and live
+            // merges land, and each crossing tore down and rebuilt an AppKit
+            // split view *inside* the navigation split view — which collapsed
+            // the sidebar and the header with it. The states are overlays on a
+            // container that never goes away.
+            HSplitView {
+                fileList
+                    .frame(minWidth: 300, idealWidth: 380)
+                    .overlay { listState }
+                detail.frame(minWidth: 420)
             }
         }
         .onAppear { reload(force: true) }
@@ -56,6 +49,33 @@ struct ReadsView: View {
                 try? await Task.sleep(for: .seconds(2))
                 guard !Task.isCancelled, !isPaused else { break }
                 reload()
+            }
+        }
+    }
+
+    /// Shown over the list rather than instead of it, so the view hierarchy
+    /// stays put while reads come and go.
+    @ViewBuilder
+    private var listState: some View {
+        if !model.settings.trackFileReads {
+            EmptyStateView(
+                symbol: "eye.slash",
+                title: "Read tracking is off",
+                message: "Turn on \"Record which files are read\" in Settings → Monitoring.")
+                .background(.background)
+        } else if groups.isEmpty {
+            if model.isLoadingReads {
+                LoadingStateView(message: "Reading the log…",
+                                 detail: "Scanning the last day of the encrypted log. New reads stream in live once it lands.")
+                    .background(.background)
+            } else {
+                EmptyStateView(
+                    symbol: "eye",
+                    title: searchText.isEmpty ? "Nothing read yet" : "No matches",
+                    message: searchText.isEmpty
+                        ? "As files are opened, the process that opened them is recorded here."
+                        : nil)
+                    .background(.background)
             }
         }
     }
@@ -123,13 +143,13 @@ struct ReadsView: View {
                 .disabled(!isPaused)
         }
         .padding(.horizontal, 14).padding(.vertical, 9)
-        // The header owns its height. Without this a long list could compress
-        // it until the search field and title collided, which is exactly what a
-        // build's worth of reads did to it.
-        .fixedSize(horizontal: false, vertical: true)
-        .frame(maxWidth: .infinity)
-        .background(.bar)
-        .zIndex(1)
+        // Deliberately no fixedSize / maxWidth: .infinity / zIndex here. Those
+        // were added to stop a busy list squeezing the header and did the
+        // opposite: at a maximised window the header collapsed to nothing and
+        // took the navigation sidebar with it. The header that survives every
+        // width is the plain one every other screen uses; the squeezing it was
+        // meant to cure was really the live merge thrashing the table, which is
+        // fixed where it belongs.
     }
 
     private var fileList: some View {
@@ -158,7 +178,6 @@ struct ReadsView: View {
                     }
                 }
                 .padding(.vertical, 2)
-                .frame(height: 52)
                 .tag(group.path)
                 .help(group.path)
             }

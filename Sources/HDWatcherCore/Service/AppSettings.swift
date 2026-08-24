@@ -184,8 +184,22 @@ public struct AppSettings: Codable, Sendable, Equatable {
         trackFileReads = try c.decodeIfPresent(Bool.self, forKey: .trackFileReads) ?? d.trackFileReads
         readSampleSeconds = try c.decodeIfPresent(Double.self, forKey: .readSampleSeconds) ?? d.readSampleSeconds
         readRoots = try c.decodeIfPresent([String].self, forKey: .readRoots) ?? d.readRoots
-        readExcludePatterns = try c.decodeIfPresent([GlobPattern].self, forKey: .readExcludePatterns)
+        // Union, not replace. The built-in exclusion list is the app's own
+        // judgment about what is noise, and it improves with each release — but
+        // settings saved before an improvement would otherwise pin the old list
+        // forever, so a shipped fix could never reach anyone who had already run
+        // the app. (That is exactly how the build-artefact exclusions failed to
+        // take effect the first time.) Whatever the user has saved is kept, and
+        // any new defaults are added on top.
+        let savedReadExcludes = try c.decodeIfPresent([GlobPattern].self, forKey: .readExcludePatterns)
             ?? d.readExcludePatterns
+        var mergedReadExcludes = savedReadExcludes
+        let alreadyExcluded = Set(savedReadExcludes.map(\.pattern))
+        for pattern in FileAccessMonitor.defaultExclusions
+        where !alreadyExcluded.contains(pattern.pattern) {
+            mergedReadExcludes.append(pattern)
+        }
+        readExcludePatterns = mergedReadExcludes
         captureFileContents = try c.decodeIfPresent(Bool.self, forKey: .captureFileContents) ?? d.captureFileContents
         contentRetention = try c.decodeIfPresent(SnapshotRetention.self, forKey: .contentRetention) ?? d.contentRetention
         maxCaptureFileBytes = try c.decodeIfPresent(Int64.self, forKey: .maxCaptureFileBytes) ?? d.maxCaptureFileBytes

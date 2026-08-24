@@ -405,3 +405,43 @@ final class BuildArtefactNoiseTests: XCTestCase {
         }
     }
 }
+
+/// Settings saved before an exclusion was added would pin the old list forever,
+/// so a shipped noise fix could never reach anyone who had already run the app.
+/// This is not hypothetical: the build-artefact exclusions failed to take effect
+/// exactly this way.
+final class ReadExclusionMigrationTests: XCTestCase {
+
+    private func decode(_ json: String) throws -> AppSettings {
+        try JSONDecoder().decode(AppSettings.self, from: Data(json.utf8))
+    }
+
+    func testNewDefaultExclusionsReachSettingsSavedBeforeThem() throws {
+        // A settings blob from before build artefacts were excluded.
+        let old = """
+        {"readExcludePatterns":[{"pattern":"**/Library/**","caseSensitive":false}]}
+        """
+        let settings = try decode(old)
+        let patterns = Set(settings.readExcludePatterns.map(\.pattern))
+        XCTAssertTrue(patterns.contains("**/Library/**"), "the saved entry survives")
+        XCTAssertTrue(patterns.contains("**/*.o.tmp"),
+                      "a default added later must still apply")
+        XCTAssertTrue(patterns.contains("**/DerivedData/**"))
+    }
+
+    func testAUsersOwnPatternIsNeverDiscarded() throws {
+        let mine = """
+        {"readExcludePatterns":[{"pattern":"**/my-private-folder/**","caseSensitive":false}]}
+        """
+        let settings = try decode(mine)
+        XCTAssertTrue(settings.readExcludePatterns.map(\.pattern).contains("**/my-private-folder/**"))
+    }
+
+    func testNoDuplicatesWhenTheSavedListAlreadyHasTheDefaults() throws {
+        let current = FileAccessMonitor.defaultExclusions
+        let encoded = try JSONEncoder().encode(["readExcludePatterns": current])
+        let settings = try JSONDecoder().decode(AppSettings.self, from: encoded)
+        let patterns = settings.readExcludePatterns.map(\.pattern)
+        XCTAssertEqual(patterns.count, Set(patterns).count, "merging must not duplicate")
+    }
+}

@@ -178,7 +178,12 @@ final class AppModel {
                 self.readsGate.cancelled(signature: signature)
                 return
             }
-            self.readGroups = groups
+            // Merge rather than replace. A scan that finishes after live reads
+            // have already arrived would otherwise drop them, and a scan that
+            // finds nothing would flip the list to empty — which swaps the
+            // whole detail pane for an empty state and, inside a navigation
+            // split view, takes the sidebar down with it.
+            self.readGroups = Self.mergeReadGroups(existing: self.readGroups, scanned: groups)
             self.isLoadingReads = false
             self.readsGate.finished(signature: signature)
             self.readsTask = nil
@@ -212,22 +217,64 @@ final class AppModel {
         }
     }
 
+    /// Combines a completed scan with whatever the live stream has already put
+    /// on screen, keeping the rows already visible where they are.
+    nonisolated private static func mergeReadGroups(existing: [ReadGroup],
+                                                    scanned: [ReadGroup]) -> [ReadGroup] {
+        guard !existing.isEmpty else { return Array(scanned.prefix(5_000)) }
+        var byPath = Dictionary(uniqueKeysWithValues: scanned.map { ($0.path, $0) })
+        var merged: [ReadGroup] = []
+        merged.reserveCapacity(existing.count + scanned.count)
+
+        // Rows already on screen keep their position.
+        for group in existing {
+            if let fromScan = byPath.removeValue(forKey: group.path) {
+                let combined = (group.events + fromScan.events)
+                    .sorted { $0.timestamp > $1.timestamp }
+                var seen = Set<UUID>()
+                let deduped = combined.filter { seen.insert($0.id).inserted }
+                merged.append(ReadGroup(path: group.path, events: Array(deduped.prefix(200))))
+            } else {
+                merged.append(group)
+            }
+        }
+        // Anything the scan found that is not on screen yet goes after, newest
+        // first.
+        merged.append(contentsOf: byPath.values.sorted { $0.lastRead > $1.lastRead })
+        return Array(merged.prefix(5_000))
+    }
+
     private func flushPendingReads() {
         readsMergeScheduled = false
         let batch = pendingReads
         pendingReads.removeAll(keepingCapacity: true)
         guard !batch.isEmpty else { return }
 
-        var byPath = Dictionary(uniqueKeysWithValues: readGroups.map { ($0.path, $0) })
+        // Update rows where they already are, and put genuinely new files at
+        // the top. Re-sorting the whole list on every merge moved every row
+        // once a second: unreadable to a person, and enough churn under a
+        // List(selection:) to break the layout outright.
+        var indexByPath: [String: Int] = [:]
+        indexByPath.reserveCapacity(readGroups.count)
+        for (index, group) in readGroups.enumerated() { indexByPath[group.path] = index }
+
+        var updated = readGroups
+        var fresh: [ReadGroup] = []
         for event in batch {
-            let existing = byPath[event.path]?.events ?? []
-            // One file's history is bounded: a process re-reading it all day
-            // should not grow this without limit.
-            byPath[event.path] = ReadGroup(path: event.path,
-                                           events: Array(([event] + existing).prefix(200)))
+            if let index = indexByPath[event.path] {
+                // One file's history is bounded: a process re-reading it all
+                // day should not grow this without limit.
+                let events = Array(([event] + updated[index].events).prefix(200))
+                updated[index] = ReadGroup(path: event.path, events: events)
+            } else if let position = fresh.firstIndex(where: { $0.path == event.path }) {
+                fresh[position] = ReadGroup(path: event.path,
+                                            events: Array(([event] + fresh[position].events).prefix(200)))
+            } else {
+                fresh.append(ReadGroup(path: event.path, events: [event]))
+            }
         }
-        // Keep the list itself bounded too, newest first.
-        readGroups = Array(byPath.values.sorted { $0.lastRead > $1.lastRead }.prefix(5_000))
+        fresh.sort { $0.lastRead > $1.lastRead }
+        readGroups = Array((fresh + updated).prefix(5_000))
     }
 
     /// Results of searching inside captured contents, which is a scan rather
