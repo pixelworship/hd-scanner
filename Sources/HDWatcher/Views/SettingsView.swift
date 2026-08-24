@@ -265,6 +265,11 @@ struct MonitoringSettings: View {
             Toggle("Record which files are read", isOn: $model.settings.trackFileReads)
                 .onChange(of: model.settings.trackFileReads) { _, _ in model.applySettings() }
 
+            Label("Off by default: as root this means asking the kernel about every descriptor of every process, which is the most expensive thing this app does.",
+                  systemImage: "gauge.with.dots.needle.67percent")
+                .font(.caption).foregroundStyle(.orange)
+                .fixedSize(horizontal: false, vertical: true)
+
             Text("Nothing changes on disk when a file is read, so FSEvents cannot report it. This samples the kernel's list of open files instead: it catches anything held open when a sample runs, and misses a file opened and closed between two of them. Endpoint Security would see every open, and needs an entitlement Apple grants by application.")
                 .font(.caption).foregroundStyle(.secondary)
                 .fixedSize(horizontal: false, vertical: true)
@@ -272,10 +277,10 @@ struct MonitoringSettings: View {
             HStack(spacing: 10) {
                 Text("Sample every").font(.callout)
                 Picker("", selection: $model.settings.readSampleSeconds) {
-                    Text("1 second").tag(1.0)
-                    Text("2 seconds").tag(2.0)
                     Text("5 seconds").tag(5.0)
-                    Text("15 seconds").tag(15.0)
+                    Text("10 seconds").tag(10.0)
+                    Text("30 seconds").tag(30.0)
+                    Text("1 minute").tag(60.0)
                 }
                 .labelsHidden()
                 .frame(width: 140)

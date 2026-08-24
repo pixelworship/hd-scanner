@@ -229,3 +229,92 @@ final class ReadDefaultsTests: XCTestCase {
         XCTAssertFalse(watcher.isInteresting(NSHomeDirectory() + "/Documents/repo/.git/objects/ab/cdef"))
     }
 }
+
+/// Sampling every descriptor of every process is the most expensive thing this
+/// app does, and as root it sees all of them. Left unbounded it ran at 130% CPU
+/// with gigabytes resident, so the bounds are part of the feature rather than a
+/// tuning detail.
+final class ReadSamplingCostTests: XCTestCase {
+
+    func testItIsOffUntilAskedFor() {
+        XCTAssertFalse(AppSettings.default.trackFileReads,
+                       "the expensive thing does not run because nobody said no")
+        XCTAssertFalse(AgentConfiguration().trackFileReads)
+    }
+
+    func testAPassIsBoundedInTime() {
+        var configuration = FileAccessMonitor.Configuration()
+        configuration.roots = ["/"]
+        configuration.excludePatterns = []
+        configuration.timeBudget = 0.05          // absurdly small on purpose
+        let watcher = FileAccessMonitor(configuration: configuration)
+
+        let started = Date()
+        watcher.sample()
+        watcher.sample()
+        // Two passes, each abandoned at the budget rather than running to
+        // completion — the failure mode was one pass overrunning into the next.
+        XCTAssertLessThan(Date().timeIntervalSince(started), 5)
+    }
+
+    func testAbandonedPassesAreCounted() {
+        var configuration = FileAccessMonitor.Configuration()
+        configuration.roots = ["/"]
+        configuration.timeBudget = 0
+        let watcher = FileAccessMonitor(configuration: configuration)
+        watcher.sample()
+        XCTAssertGreaterThan(watcher.unfinishedPasses, 0,
+                             "missing reads has to be visible, not silent")
+    }
+
+    func testProcessesHoldingThousandsOfFilesAreSkipped() {
+        // Nothing to assert about a specific process, but the limit must be
+        // honoured rather than ignored.
+        XCTAssertNil(ProcessAuditor.openPaths(pid: ProcessInfo.processInfo.processIdentifier, limit: 0))
+        XCTAssertNotNil(ProcessAuditor.openPaths(pid: ProcessInfo.processInfo.processIdentifier))
+    }
+
+    func testTheDefaultIntervalIsNotAggressive() {
+        XCTAssertGreaterThanOrEqual(FileAccessMonitor.Configuration().interval, 5)
+        XCTAssertGreaterThanOrEqual(AppSettings.default.readSampleSeconds, 5)
+    }
+}
+
+/// Describing a process means code signing, arguments and the executable path.
+/// Read tracking asks about the same handful of processes over and over, and
+/// without a cache that was most of the 140% CPU.
+final class ProcessDescriptionCacheTests: XCTestCase {
+
+    func testDescribingTheSameProcessTwiceIsCheap() {
+        let auditor = ProcessAuditor()
+        let me = ProcessInfo.processInfo.processIdentifier
+
+        let first = Date()
+        _ = auditor.describe(pid: me, evidence: .holdsFileOpen)
+        let cold = Date().timeIntervalSince(first)
+
+        let second = Date()
+        for _ in 0..<200 { _ = auditor.describe(pid: me, evidence: .holdsFileOpen) }
+        let warm = Date().timeIntervalSince(second)
+
+        XCTAssertLessThan(warm, max(cold * 20, 0.5),
+                          "two hundred repeats must not cost two hundred lookups")
+    }
+
+    func testItStillDescribesTheProcessCorrectly() throws {
+        let auditor = ProcessAuditor()
+        let result = auditor.describe(pid: ProcessInfo.processInfo.processIdentifier,
+                                      evidence: .holdsFileOpen)
+        let actor = try XCTUnwrap(result.best)
+        XCTAssertEqual(actor.pid, ProcessInfo.processInfo.processIdentifier)
+        XCTAssertFalse(actor.name.isEmpty)
+        XCTAssertEqual(actor.evidence, .holdsFileOpen)
+    }
+
+    func testAProcessThatIsGoneIsNotInvented() {
+        let auditor = ProcessAuditor()
+        let result = auditor.describe(pid: 999_999, evidence: .holdsFileOpen)
+        XCTAssertTrue(result.actors.isEmpty)
+        XCTAssertTrue(result.blockedByPrivileges)
+    }
+}

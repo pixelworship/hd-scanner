@@ -456,6 +456,14 @@ public final class WatcherEngine: @unchecked Sendable {
         if filterChanged {
             normalizer = EventNormalizer(settings: newSettings.filter)
         }
+        // Read tracking is expensive enough that turning it off has to take
+        // effect immediately, without waiting for a restart.
+        let trackingWanted = newSettings.trackFileReads
+        if trackingWanted != (readMonitor != nil) {
+            readMonitor?.stop()
+            readMonitor = nil
+            if trackingWanted { startReadTracking() }
+        }
         if let contentVault {
             var vaultConfig = ContentVault.Configuration()
             vaultConfig.retention = newSettings.contentRetention

@@ -318,6 +318,13 @@ Documents, Downloads, Pictures, Movies, Music, Public) plus `/Volumes`, with
 `~/Library`, caches, code, `node_modules` and `.git` excluded. The same
 measurement with those defaults, idle: zero. Reading one document: one event.
 
+**It is off by default, and that is not timidity.** As root the daemon can see
+every descriptor of every process on the machine, and an unbounded sweep of that
+measured 130% CPU with gigabytes resident. A pass is now abandoned at a time
+budget rather than overrunning into the next one, processes holding more than
+512 files are skipped, the default interval is ten seconds, and abandoned passes
+are counted so missed reads are visible rather than silent.
+
 The first sample after recording starts records what is already open **without
 reporting it** — those files were opened before anyone was watching, and calling
 them reads that happened now would be a lie the log keeps forever.
@@ -626,7 +633,7 @@ Tests/HDWatcherCoreTests/    unit + live filesystem integration tests
 swift test
 ```
 
-327 tests, runnable with `swift test` or through the Xcode scheme. Unit tests cover the vault, log round-trips, tamper detection, rule
+335 tests, runnable with `swift test` or through the Xcode scheme. Unit tests cover the vault, log round-trips, tamper detection, rule
 matching, burst and cooldown behaviour, hotspot rollup, filtering, the content
 container (capture, dedup, retention, restore, compaction, encryption at rest)
 the diff engine, and volume classification. Integration tests mount a real disk

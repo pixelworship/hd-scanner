@@ -220,6 +220,8 @@ public final class ProcessAuditor: @unchecked Sendable {
         return table.count
     }
 
+    private var actorCache: [String: CachedActor] = [:]
+
     /// A snapshot of everything running, for the audit record.
     public func runningProcesses() -> [ProcessActor] {
         mutex.lock(); defer { mutex.unlock() }
@@ -228,7 +230,42 @@ public final class ProcessAuditor: @unchecked Sendable {
 
     // MARK: - Building an actor
 
+    /// Describing a process is not cheap — code signing, arguments, the
+    /// executable path — and read tracking asks for the same handful of
+    /// processes over and over. Without this, attributing a few hundred reads a
+    /// second pushed the daemon to 140% CPU and gigabytes resident: the
+    /// Security framework holds on to what it is asked about.
+    private struct CachedActor {
+        let actor: ProcessActor
+        let at: Date
+    }
+    private static let actorCacheTTL: TimeInterval = 60
+    private static let actorCacheLimit = 512
+
     private func actorFor(pid: Int32, evidence: AttributionEvidence) -> ProcessActor? {
+        let key = "\(pid)|\(evidence.rawValue)"
+        mutex.lock()
+        if let cached = actorCache[key], Date().timeIntervalSince(cached.at) < Self.actorCacheTTL {
+            mutex.unlock()
+            return cached.actor
+        }
+        mutex.unlock()
+
+        guard let built = buildActor(pid: pid, evidence: evidence) else { return nil }
+
+        mutex.lock()
+        if actorCache.count >= Self.actorCacheLimit {
+            // Cheap eviction: the oldest half goes, rather than tracking usage.
+            let cutoff = Date().addingTimeInterval(-Self.actorCacheTTL / 2)
+            actorCache = actorCache.filter { $0.value.at > cutoff }
+            if actorCache.count >= Self.actorCacheLimit { actorCache.removeAll() }
+        }
+        actorCache[key] = CachedActor(actor: built, at: Date())
+        mutex.unlock()
+        return built
+    }
+
+    private func buildActor(pid: Int32, evidence: AttributionEvidence) -> ProcessActor? {
         guard let info = Self.bsdInfo(pid: pid) else { return nil }
         let executable = Self.executablePath(pid: pid)
         let name = Self.processName(info) ?? (executable as NSString?)?.lastPathComponent ?? "pid \(pid)"
@@ -325,7 +362,7 @@ public final class ProcessAuditor: @unchecked Sendable {
 
     /// Paths this process currently has open. Returns nil when the kernel
     /// refuses, which is how root-owned processes present to us.
-    static func openPaths(pid: Int32) -> Set<String>? {
+    static func openPaths(pid: Int32, limit: Int = .max) -> Set<String>? {
         let bufferSize = proc_pidinfo(pid, PROC_PIDLISTFDS, 0, nil, 0)
         guard bufferSize > 0 else { return nil }
         let capacity = Int(bufferSize) / MemoryLayout<proc_fdinfo>.size
@@ -335,6 +372,8 @@ public final class ProcessAuditor: @unchecked Sendable {
 
         var paths = Set<String>()
         let count = Int(written) / MemoryLayout<proc_fdinfo>.size
+        // A process with thousands of open files costs a great deal to walk.
+        guard count <= limit else { return nil }
         for index in 0..<min(count, capacity) {
             let descriptor = descriptors[index]
             guard descriptor.proc_fdtype == UInt32(PROX_FDTYPE_VNODE) else { continue }

@@ -37,8 +37,19 @@ public final class FileAccessMonitor: @unchecked Sendable {
 
     public struct Configuration: Sendable {
         /// How often to look. Sampling is the whole mechanism, so this is the
-        /// resolution: anything opened and closed inside one interval is missed.
-        public var interval: TimeInterval = 2
+        /// resolution: anything opened and closed inside one interval is
+        /// missed. It is also the cost: as root, one pass means asking the
+        /// kernel about every descriptor of every process on the machine.
+        public var interval: TimeInterval = 10
+        /// A pass that cannot finish inside this is abandoned rather than
+        /// allowed to run into the next one. Measured on a busy Mac, a full
+        /// sweep as root is not cheap, and two of them overlapping is how a
+        /// sampler turns into a runaway.
+        public var timeBudget: TimeInterval = 1.5
+        /// Processes holding more descriptors than this are skipped. A browser
+        /// or a database with thousands of open files costs a great deal to
+        /// walk and never holds the document anyone is asking about.
+        public var maximumDescriptorsPerProcess = 512
         /// Only these roots are considered.
         ///
         /// Not the whole home: measured on a real machine, `~/Library` alone
@@ -181,16 +192,36 @@ public final class FileAccessMonitor: @unchecked Sendable {
         guard written > 0 else { return [] }
 
         let mine = ProcessInfo.processInfo.processIdentifier
+        let deadline = Date().addingTimeInterval(configuration.timeBudget)
+        var skipped = 0
+
         for pid in pids where pid > 0 && pid != mine {
-            guard let paths = ProcessAuditor.openPaths(pid: pid), !paths.isEmpty else { continue }
-            let name = ProcessAuditor.bsdInfo(pid: pid).flatMap(ProcessAuditor.processName)
-                ?? "pid \(pid)"
+            // Abandon the pass rather than let it overrun into the next one.
+            if Date() > deadline {
+                skipped += 1
+                continue
+            }
+            guard let paths = ProcessAuditor.openPaths(
+                pid: pid, limit: configuration.maximumDescriptorsPerProcess),
+                  !paths.isEmpty else { continue }
+            // Only look up the name for a process that actually holds something
+            // interesting: it is another two syscalls per process otherwise.
+            var name: String?
             for path in paths where isInteresting(path) {
-                results.append((path, pid, name))
+                if name == nil {
+                    name = ProcessAuditor.bsdInfo(pid: pid).flatMap(ProcessAuditor.processName)
+                        ?? "pid \(pid)"
+                }
+                results.append((path, pid, name!))
             }
         }
+        if skipped > 0 { unfinishedPasses += 1 }
         return results
     }
+
+    /// How many passes ran out of time. Visible rather than silent: it means
+    /// reads are being missed.
+    public private(set) var unfinishedPasses = 0
 
     func isInteresting(_ path: String) -> Bool {
         guard !path.isEmpty, path.hasPrefix("/") else { return false }
